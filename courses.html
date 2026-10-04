@@ -9,7 +9,13 @@
 <h1>Courses</h1>
 
 <p>
-  Below are brief overviews of selected courses taught at Tallinn University of Technology’s IT College.
+  Courses taught at Tallinn University of Technology’s IT College in the 2026/2027 autumn semester.
+  Each course carries 6 ECTS (156 hours): approximately 64 contact hours and 92 hours of independent work.
+</p>
+<p>
+  <b>Lecturer:</b> Ali Ghasempour, School of Information Technologies, IT College<br />
+  <b>Contact:</b> <a href="mailto:ali.ghasempour@taltech.ee">ali.ghasempour@taltech.ee</a><br />
+  Consultations are available by appointment. General course questions can be posted in the Moodle course forum.
 </p>
 
 <hr />
@@ -18,15 +24,60 @@
 <p><b>Course code:</b> ICS0020<br />
 <b>English title:</b> Logging and Monitoring<br />
 <b>ECTS:</b> 6<br />
-<b>Semester:</b> Autumn<br />
-<b>Language:</b> Estonian/English<br />
+<b>Semester:</b> Autumn 2026/2027<br />
+<b>Language:</b> English<br />
+<b>Study format:</b> Daytime; 2 academic hours of lectures and 2 academic hours of practical work per week<br />
+<b>Target group:</b> Compulsory for IAAB17/26 and IVSB17/26<br />
+<b>Assessment:</b> Examination; numeric grade 0–5<br />
+<b>Moodle:</b> <a href="https://moodle.taltech.ee/course/view.php?id=37673">ICS0020 course materials</a>
 </p>
+
+<h3>Course description</h3>
 <p>
-  This course gives an overview of logging and monitoring approaches for operating systems and applications.
-  Students learn to define approaches for centralized logging and monitoring, work with platform logs
-  (e.g., Linux/Windows), implement log requirements, and use solutions such as rsyslog.<br />
-  <b>Learning outcomes:</b> understanding log management processes, implementing centralized logging
-  and monitoring, performing correlation of events.
+  An introduction to operating system and application logging and monitoring, combining concepts and standards
+  with practical work in Linux and Windows environments. Topics include syslog and rsyslog, log aggregation,
+  relay and archiving, regular expressions, logging in applications and scripts, correlation and analysis with
+  Elastic/OpenSearch, and monitoring with Prometheus/Grafana. The course also covers SOC and operational
+  processes, ITIL, log integrity, interoperability, and the architecture of centralized monitoring and log management.
+</p>
+
+<h3>Learning outcomes</h3>
+<ul>
+  <li>Choose an appropriate approach to centralized monitoring, log management, and intelligence.</li>
+  <li>Work with operating system logs in Linux and Windows.</li>
+  <li>Define logging requirements and implement logging in applications and scripts.</li>
+  <li>Implement centralized log management and monitoring solutions.</li>
+  <li>Work with rsyslog and perform event correlation.</li>
+  <li>Define the operational processes needed for monitoring and log management.</li>
+</ul>
+
+<h3>Prerequisites and tools</h3>
+<p>
+  Fundamentals of Networking (ICA0013 or ICA0019), basic command-line skills, and basic TCP/IP knowledge.
+  Linux basics are revised early in the course. Students need a computer capable of running two virtual machines
+  simultaneously (minimum 8 GB RAM; 40 GB free disk space recommended), VirtualBox or VMware Workstation Player,
+  Ubuntu Server VMs, and a Windows system for Windows Event Log exercises. Tools include rsyslog, syslog-ng,
+  Fluentd/Fluent Bit, Elasticsearch/OpenSearch, Kibana, Prometheus, Grafana, and Docker.
+</p>
+
+<h3>Schedule and assessment</h3>
+<p>
+  <b>Wednesdays:</b> 2 September–16 December 2026<br />
+  <b>Lab:</b> 14:00–15:30, ICO-319 / ICO-317<br />
+  <b>Lecture:</b> 17:45–19:15, ICO-314
+</p>
+<ul>
+  <li><b>Practical assignments: 50%.</b> At least five submissions are needed for the full homework component.
+    Lab attendance is optional, but homework submission is required.</li>
+  <li><b>Linux From Scratch alternative:</b> Build, document, and present a working LFS system instead of the
+    regular homework track. Register within the first four weeks and present no later than Week 12.</li>
+  <li><b>Final examination: 50%.</b> 16 December 2026, in Moodle, on site. Covers all course topics,
+    including questions based on log extracts. Passing the examination requires at least 51% of its points.</li>
+  <li><b>Bonus:</b> Up to 30 additional points for attendance, presentations or extra contributions, and team class activity.</li>
+</ul>
+<p>
+  A positive course grade requires at least 51 points in total. Grades are 1 for 51–60, 2 for 61–70,
+  3 for 71–80, 4 for 81–90, and 5 for 91 points or more; totals above 100 remain grade 5.
 </p>
 
 <hr />
@@ -35,15 +86,60 @@
 <p><b>Course code:</b> ICS0022<br />
 <b>English title:</b> Secure Programming<br />
 <b>ECTS:</b> 6<br />
-<b>Semester:</b> Autumn<br />
-<b>Language:</b> Estonian/English<br />
+<b>Semester:</b> Autumn 2026/2027<br />
+<b>Language:</b> English<br />
+<b>Study format:</b> Daytime; 2 academic hours of lectures and 2 academic hours of practical work per week<br />
+<b>Target group:</b> Compulsory for IVSB17/26; elective for IVCM25/26 and VAMM23/26<br />
+<b>Assessment:</b> Examination; numeric grade 0–5<br />
+<b>Moodle:</b> <a href="https://moodle.taltech.ee/course/view.php?id=37674">ICS0022 course materials</a>
 </p>
+
+<h3>Course description</h3>
 <p>
-  This course introduces the basics of writing secure code and the major techniques used to improve
-  software security. Students learn principles such as input validation, output encoding, secure memory
-  usage, and avoidance of common vulnerabilities like buffer overflows and injection attacks.
-  <b>Learning outcomes:</b> familiarity with secure programming concepts, ability to apply
-  basic secure programming techniques across common languages.
+  An introduction to secure programming concepts and practical defensive techniques. Topics include input
+  validation, attack-resistant output, race conditions, buffer overflows, injection attacks, protecting secret
+  information, secure memory use and erasing, cryptography, and the challenges of multi-user systems.
+  Lectures and isolated labs use C and Python examples, debugging, and static and dynamic analysis.
+  A semester project applies the techniques to a larger case.
+</p>
+
+<h3>Learning outcomes</h3>
+<ul>
+  <li>Understand the basic concepts and common techniques of secure programming.</li>
+  <li>Apply secure programming techniques to practical problems.</li>
+  <li>Understand secure memory usage and secure erasing.</li>
+  <li>Apply secure programming techniques across common programming languages.</li>
+</ul>
+
+<h3>Prerequisites and tools</h3>
+<p>
+  No formal prerequisite courses. Students should be able to read and write code in at least one language,
+  use the Linux command line, and understand basic program memory use. A computer capable of running a Linux VM
+  is required, with VirtualBox or VMware Workstation Player, gcc, GDB, Python 3, and the analysis tools introduced
+  during the course. Exploitation exercises use the supplied practice code in an isolated VM or course-provided systems.
+</p>
+
+<h3>Schedule and assessment</h3>
+<p>
+  <b>Fridays:</b> 4 September–18 December 2026<br />
+  <b>Lab:</b> 14:15–15:45, ICO-319 / ICO-317<br />
+  <b>Lecture:</b> 18:00–19:45, ICO-316
+</p>
+<ul>
+  <li><b>Midterm examination: 30%.</b> 23 October 2026, covering Weeks 1–7.</li>
+  <li><b>Final project: 30%.</b> Three checkpoints worth 5% each on 25 September, 30 October,
+    and 20 November 2026; an in-class presentation worth 15% on 4 or 11 December 2026.
+    The report and code are due before the Week 14 presentation session on 4 December.</li>
+  <li><b>Version control:</b> Submit a personal Git or equivalent username in Moodle by the end of Week 2
+    and commit work at each checkpoint.</li>
+  <li><b>Final examination: 40%.</b> 18 December 2026, including code-analysis questions.
+    Passing the examination requires at least 51% of its points.</li>
+  <li><b>Bonus:</b> Up to 30 additional points for attendance, submitting at least two thirds of lab homework,
+    and team class activity.</li>
+</ul>
+<p>
+  A positive course grade requires at least 51 points in total. Grades are 1 for 51–60, 2 for 61–70,
+  3 for 71–80, 4 for 81–90, and 5 for 91 points or more; totals above 100 remain grade 5.
 </p>
 
 <hr />
@@ -52,15 +148,82 @@
 <p><b>Course code:</b> ICS0027<br />
 <b>English title:</b> Web Application Security<br />
 <b>ECTS:</b> 6<br />
-<b>Semester:</b> Autumn<br />
-<b>Language:</b> Estonian/English<br />
+<b>Semester:</b> Autumn 2026/2027<br />
+<b>Language:</b> English<br />
+<b>Study format:</b> Daytime; 2 academic hours of lectures and 2 academic hours of practical work per week<br />
+<b>Target group:</b> Elective for IVCM25/26 and IVSB17/26<br />
+<b>Assessment:</b> Pass/fail<br />
+<b>Moodle:</b> <a href="https://moodle.taltech.ee/course/view.php?id=37675">ICS0027 course materials</a>
+</p>
+
+<h3>Course description</h3>
+<p>
+  An introduction to common web application attacks, how they work, and how to build effective defences.
+  Topics include HTTP/HTTPS, browser security policies, HTML and JavaScript injection, XSS, cookies and sessions,
+  authentication and authorization, access-control and business-logic flaws, SQL injection, CSRF, clickjacking,
+  command injection, file handling and uploads, and protecting secrets. The semester also covers responsible
+  disclosure, DNS/CDN security, software analysis, and OWASP API Security. Hands-on labs and a semester project
+  apply these ideas to deliberately vulnerable applications.
+</p>
+
+<h3>Learning outcomes</h3>
+<ul>
+  <li>Explain common web application attack methods and the concepts behind them.</li>
+  <li>Explain defences and apply them in practice against common web application attacks.</li>
+</ul>
+
+<h3>Prerequisites and tools</h3>
+<p>
+  No formal prerequisite courses. Students need a basic understanding of web applications and HTTP,
+  basic HTML/JavaScript literacy, and the ability to read simple code; Linux command-line skills are helpful.
+  A computer capable of running a VM or Docker containers is required. Labs use OWASP ZAP or Burp Suite
+  Community Edition, OWASP Juice Shop and other course-provided targets, and PortSwigger Web Security Academy.
+  All course software is free or open source. Testing exercises are limited to the designated practice targets.
+</p>
+
+<h3>Schedule and assessment</h3>
+<p>
+  <b>Mondays:</b> 31 August–14 December 2026<br />
+  <b>Lab:</b> 14:00–15:30, ICO-319 / ICO-317<br />
+  <b>Lecture:</b> 16:00–17:45, ICO-316
+</p>
+<ul>
+  <li><b>Midterm: 30%.</b> 19 October 2026, covering Weeks 1–7.</li>
+  <li><b>Final project: 30%.</b> Three checkpoints worth 5% each on 21 September, 26 October,
+    and 16 November 2026; an in-class presentation worth 15% on 30 November or 7 December 2026.
+    The report and code are due before the Week 14 presentation session on 30 November.</li>
+  <li><b>Version control:</b> Submit a personal Git or equivalent username in Moodle by the end of Week 2
+    and commit work at each checkpoint.</li>
+  <li><b>Final assessment: 40%.</b> 14 December 2026, covering all course topics,
+    including code analysis and attack/defence questions.</li>
+  <li><b>Bonus:</b> Up to 30 additional points for attendance, PortSwigger Academy lab completion,
+    and team class activity. Register a PortSwigger username in the first or second lab week;
+    the required number of labs is announced in the first lab week.</li>
+</ul>
+<p>
+  The course is passed with at least 51 points in total, including bonus points; 50 points or fewer is a fail.
+  No numeric grade is awarded.
+</p>
+
+<hr />
+
+<h2>Course arrangements</h2>
+<p>
+  Labs take place before lectures and practise the previous week's topic. There is no lab in Week 1;
+  labs start in Week 2. The semester plans are preliminary, and changes are announced in Moodle.
+  Moodle also contains slides, practical instructions, assignment criteria, deadlines, retake information,
+  the extended syllabuses, and the gradebook.
 </p>
 <p>
-  This course provides an introduction to the security of web applications. Students examine common
-  attack techniques such as SQL injection, cross-site scripting (XSS), cross-site request forgery (CSRF),
-  session attacks, and authentication vulnerabilities, as well as general defense strategies.
-  <b>Learning outcomes:</b> understanding of common web vulnerabilities and ability to explain and apply
-  defenses against them.
+  Examinations and presentations take place on site; tests are taken in Moodle in the classroom.
+  Remote participation requires an agreed exception from the lecturer. AI tools are prohibited during midterms and final tests.
+  For coursework, AI may be used for ideas, explanations, and language editing; its use must be declared
+  and the output verified. Generating submitted code, solutions, or substantive report content requires
+  explicit permission in the assignment.
+</p>
+<p>
+  Declare the course in ÕIS by the academic calendar deadline. Students who need accessibility adjustments
+  should contact the lecturer at the beginning of the course to agree suitable arrangements.
 </p>
 
 <p><a href="index.html">← Back to Home</a></p>
