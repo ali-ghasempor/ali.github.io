@@ -10,9 +10,17 @@ const SETUP = LOCAL && new URLSearchParams(location.search).get('setup') === '1'
 let store, user, toastTimer, loading = false;
 let data = { profiles: [], reports: [], comments: [], tasks: [], slots: [] };
 let view = 'overview', studentFilter = '', showArchived = false;
+let studentImport = null;
 const dateKey = date => new Intl.DateTimeFormat('sv-SE', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(date));
 const time = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit' }).format(new Date(date));
 const dateText = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(date.length === 10 ? `${date}T12:00:00Z` : date));
+const defenceText = date => new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', month: 'long', year: 'numeric' }).format(new Date(`${date.slice(0, 7)}-01T12:00:00Z`));
+// The existing date column stores the first day as a month anchor, not a scheduled defence day.
+function defenceDate(month) {
+  if (!month) return null;
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || Number(month.slice(0, 4)) < 1900) throw new Error('Choose a valid expected defence month.');
+  return `${month}-01`;
+}
 let selectedDay = dateKey(new Date()), month = selectedDay.slice(0, 7);
 const initials = name => name.split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
 const studentName = id => data.profiles.find(p => p.id === id)?.full_name || 'Student';
@@ -34,7 +42,7 @@ function dialog(title, html, wide = false) {
   modal.className = wide ? 'wide' : ''; modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${e(title)}</h2><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>${html}`;
   modal.showModal();
 }
-function closeDialog() { modal.close(); modal.innerHTML = ''; }
+function closeDialog() { modal.close(); modal.innerHTML = ''; studentImport = null; }
 function field(label, html, extra = '') { return `<label class="field ${extra}"><span>${e(label)}</span>${html}</label>`; }
 function actions(label) { return `<div class="form-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit">${e(label)}</button></div>`; }
 async function busy(button, fn) {
@@ -79,7 +87,7 @@ function render() {
     <div class="sidebar-bottom"><a href="index.html">← Personal website</a><div class="user-card"><span class="avatar">${e(initials(user.full_name))}</span><div><strong>${e(user.full_name)}</strong><small>${supervisor?'Supervisor':'Student'}</small></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">↗</button></div></div></aside>
     <main class="main"><header class="topbar"><span>${supervisor?'Supervisor workspace':'Student workspace'}</span><div>${badge(store.mode==='demo'?'Local demo':supervisor?'Supabase connected':'Signed in',store.mode==='demo'?'amber':'green')}<button class="icon-button" data-action="refresh" aria-label="Refresh workspace">↻</button></div></header>
     ${store.mode==='demo'?'<div class="demo-banner">LOCAL DEMO · Fictional sample records, stored only in this browser.</div>':''}
-    <div class="page"><div class="page-heading"><div><span class="eyebrow">${e(dateText(new Date().toISOString()))}</span><h1>${titles[view][0]}</h1><p>${titles[view][1]}</p></div>${view==='students'?'<button class="primary" data-action="add-student">+ Add student</button>':view==='progress'&&!supervisor?'<button class="primary" data-action="new-report">+ Share progress</button>':view==='meetings'&&supervisor?'<button class="primary" data-action="availability">+ Add availability</button>':''}</div>
+    <div class="page"><div class="page-heading"><div><span class="eyebrow">${e(dateText(new Date().toISOString()))}</span><h1>${titles[view][0]}</h1><p>${titles[view][1]}</p></div>${view==='students'?'<div class="document-actions"><button class="secondary" data-action="import-students">Import students</button><button class="primary" data-action="add-student">+ Add student</button></div>':view==='progress'&&!supervisor?'<button class="primary" data-action="new-report">+ Share progress</button>':view==='meetings'&&supervisor?'<button class="primary" data-action="availability">+ Add availability</button>':''}</div>
     ${view==='overview'?overview():view==='students'?students():view==='progress'?progress():view==='meetings'?meetings():settings()}</div></main></div>`;
 }
 function metric(label,value,note,tone='') { return `<div class="metric ${tone}"><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`; }
@@ -87,7 +95,7 @@ function overview() {
   const supervisor = isSupervisor();
   const upcoming = futureMeetings(); const reports = sortedReports();
   return `<div class="metrics">${metric(supervisor?'Active students':'Progress updates',supervisor?data.profiles.filter(p=>p.role==='student'&&p.active).length:reports.length,supervisor?'Theses in progress':'A record of your work')}${metric('Upcoming meetings',upcoming.length,'Time set aside to talk')}${metric(supervisor?'Awaiting feedback':'Open next steps',supervisor?reports.filter(r=>!hasFeedback(r)).length:openTasks().length,supervisor?'Updates to review':'Keep the work moving','accent')}${metric('Shared documents',reports.filter(r=>r.file_path||r.share_url).length,'PDFs and sharing links')}</div>
-    ${!supervisor?`<section class="thesis-card"><div><span class="eyebrow">YOUR THESIS</span><h2>${e(user.thesis_title || 'Your thesis title will appear here')}</h2><p>${user.defence_date?'Defence: '+e(dateText(user.defence_date)):'Defence date to be agreed with your supervisor'}</p></div><button class="primary" data-action="new-report">Share progress →</button></section>`:''}
+    ${!supervisor?`<section class="thesis-card"><div><span class="eyebrow">YOUR THESIS</span><h2>${e(user.thesis_title || 'Your thesis title will appear here')}</h2><p>${user.defence_date?'Expected defence: '+e(defenceText(user.defence_date)):'Defence month to be agreed with your supervisor'}</p></div><button class="primary" data-action="new-report">Share progress →</button></section>`:''}
     <div class="overview-grid"><section class="panel"><div class="panel-heading"><h2>Latest progress</h2><button class="text-button" data-action="view" data-view="progress">View all →</button></div>${reports.length?reports.slice(0,4).map(reportCard).join(''):empty('A fresh start','Progress updates will appear here when students share their work.')}</section>
     <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2></div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
 }
@@ -100,7 +108,7 @@ function taskList(tasks) {
 }
 function students() {
   const list = data.profiles.filter(p=>p.role==='student'&&(showArchived||p.active)&&`${p.full_name} ${p.username} ${p.thesis_title}`.toLowerCase().includes(studentFilter.toLowerCase()));
-  return `<section class="panel"><div class="toolbar"><input id="student-search" type="search" aria-label="Search students" placeholder="Search names or thesis titles…" value="${e(studentFilter)}"><label class="check"><input type="checkbox" id="show-archived" ${showArchived?'checked':''}> Include archived</label></div><div class="table-wrap"><table><thead><tr><th>Student</th><th>Thesis</th><th>Defence</th><th>Latest progress</th><th></th></tr></thead><tbody>${list.map(p=>{const latest=sortedReports().find(r=>r.student_id===p.id); return `<tr><td><div class="person"><span class="avatar soft">${e(initials(p.full_name))}</span><div><strong>${e(p.full_name)}</strong><small>@${e(p.username)} ${!p.active?'· Archived':''}</small></div></div></td><td class="title-cell">${e(p.thesis_title||'Title to be agreed')}</td><td>${p.defence_date?e(dateText(p.defence_date)):'—'}</td><td>${latest?e(dateText(latest.created_at)):'No updates yet'}</td><td><button class="secondary small-button" data-action="student" data-id="${e(p.id)}">Open →</button></td></tr>`;}).join('')}</tbody></table></div>${list.length?'':empty('No students found','Add a student or change your search.')}</section>`;
+  return `<section class="panel"><div class="toolbar"><input id="student-search" type="search" aria-label="Search students" placeholder="Search names or thesis titles…" value="${e(studentFilter)}"><label class="check"><input type="checkbox" id="show-archived" ${showArchived?'checked':''}> Include archived</label></div><div class="table-wrap"><table><thead><tr><th>Student</th><th>Thesis</th><th>Expected defence</th><th>Latest progress</th><th></th></tr></thead><tbody>${list.map(p=>{const latest=sortedReports().find(r=>r.student_id===p.id); return `<tr><td><div class="person"><span class="avatar soft">${e(initials(p.full_name))}</span><div><strong>${e(p.full_name)}</strong><small>@${e(p.username)} ${!p.active?'· Archived':''}</small></div></div></td><td class="title-cell">${e(p.thesis_title||'Title to be agreed')}</td><td>${p.defence_date?e(defenceText(p.defence_date)):'—'}</td><td>${latest?e(dateText(latest.created_at)):'No updates yet'}</td><td><button class="secondary small-button" data-action="student" data-id="${e(p.id)}">Open →</button></td></tr>`;}).join('')}</tbody></table></div>${list.length?'':empty('No students found','Add a student or change your search.')}</section>`;
 }
 function progress() { const reports=sortedReports(); return `<div class="progress-layout"><section class="panel"><div class="panel-heading"><h2>${isSupervisor()?'Student submissions':'Your submissions'}</h2><span class="muted small">${reports.length} updates</span></div>${reports.length?reports.map(reportCard).join(''):empty('Start with a short update','Share what you have done, what comes next, and where you need help.')}</section>${!isSupervisor()?`<section class="panel"><div class="panel-heading"><h2>Your next steps</h2></div>${taskList([...data.tasks].sort((a,b)=>Number(a.completed)-Number(b.completed)))}</section>`:''}</div>`; }
 function meetingCard(s) {
@@ -139,11 +147,75 @@ function reportDialog(id) {
   dialog(r.title,`<p class="muted">${e(studentName(r.student_id))} · ${e(dateText(r.created_at))}</p><div class="prose">${e(r.body)}</div><div class="document-actions">${r.file_path?`<button class="secondary" data-action="file" data-id="${e(r.id)}">▧ Open ${e(r.file_name)}</button>`:''}${safeShareURL(r.share_url)?`<a class="secondary" href="${e(safeShareURL(r.share_url))}" target="_blank" rel="noopener noreferrer">↗ Open shared document</a>`:''}</div><h3>Supervisor feedback</h3>${comments.length?comments.map(c=>`<div class="comment"><div class="row"><strong>Supervisor</strong><small>${e(dateText(c.created_at))}</small></div><p class="prose">${e(c.body)}</p></div>`).join(''):'<p class="muted">No feedback yet.</p>'}${isSupervisor()?`<form data-form="comment" data-id="${e(id)}">${field('Leave a comment','<textarea name="body" rows="3" required maxlength="10000" placeholder="Feedback, decisions, and what to focus on next…"></textarea>')}<button class="primary" type="submit">Add feedback</button></form><hr><form data-form="task" data-id="${e(r.student_id)}">${field('Assign a next step','<input name="title" required maxlength="500" placeholder="A concrete next action">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="secondary" type="submit">Add next step</button></form>`:''}`,true);
 }
 function addStudent() {
-  dialog('Create a student account',`<form data-form="student">${field('Full name','<input name="full_name" required maxlength="120" autocomplete="off">')}${field('Username','<input name="username" required pattern="[a-z0-9][a-z0-9._-]{2,31}" minlength="3" maxlength="32" autocomplete="off" placeholder="e.g. anna.s"><small>3–32 lowercase letters, numbers, dots, underscores or hyphens.</small>')}${field('Initial password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><small>At least 12 characters. Share it privately with the student.</small>')}${field('Thesis title','<textarea name="thesis_title" rows="2" maxlength="500"></textarea>')}${field('Defence date (optional)','<input name="defence_date" type="date">')}${actions('Create account')}</form>`);
+  dialog('Create a student account',`<form data-form="student">${field('Full name','<input name="full_name" required maxlength="120" autocomplete="off">')}${field('Username','<input name="username" required pattern="[a-z0-9][a-z0-9._-]{2,31}" minlength="3" maxlength="32" autocomplete="off" placeholder="e.g. anna.s"><small>3–32 lowercase letters, numbers, dots, underscores or hyphens.</small>')}${field('Initial password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><small>At least 12 characters. Share it privately with the student.</small>')}${field('Thesis title','<textarea name="thesis_title" rows="2" maxlength="500"></textarea>')}${field('Expected defence month (optional)','<input name="expected_defence" type="month">')}${actions('Create account')}</form>`);
+}
+function importDialog() {
+  if (!isSupervisor()) return;
+  studentImport = null;
+  dialog('Import student accounts', `<p>Select the private JSON account list prepared for your students. Review the names, theses and expected defence months before creating accounts.</p><p class="small muted">Existing usernames, including archived accounts, are skipped. Their profiles and passwords are kept. Temporary passwords are sent only when creating a new account.</p>${field('Student account list', '<input name="student-import-file" type="file" accept=".json,application/json">')}<p class="small muted">Up to 100 students, file size up to 1 MB. Keep this file private.</p><div id="student-import-preview"></div>`, true);
+}
+function readStudentImport(text) {
+  let payload;
+  try { payload = JSON.parse(text.replace(/^\uFEFF/, '')); } catch { throw new Error('Choose a valid JSON student account list.'); }
+  if (!payload || payload.version !== 1 || !Array.isArray(payload.students) || !payload.students.length || payload.students.length > 100 || Object.keys(payload).some(k => !['version', 'students'].includes(k))) throw new Error('Use a version 1 account list with 1–100 students.');
+  const seen = new Set();
+  return payload.students.map((row, index) => {
+    const invalid = message => { throw new Error(`Student ${index + 1}: ${message}`); };
+    const keys = ['full_name', 'username', 'password', 'thesis_title', 'expected_defence'];
+    if (!row || Array.isArray(row) || typeof row !== 'object' || Object.keys(row).some(k => !keys.includes(k)) || keys.some(k => typeof row[k] !== 'string')) invalid('check the account fields.');
+    const full_name = row.full_name.trim(), username = row.username.trim().toLowerCase(), thesis_title = row.thesis_title.trim(), expected_defence = row.expected_defence.trim();
+    if (!full_name || full_name.length > 120 || thesis_title.length > 500) invalid('check the full name and thesis title.');
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) invalid('use a valid username of 3–32 characters.');
+    if (seen.has(username)) invalid('the account list contains a duplicate username.');
+    seen.add(username);
+    if (row.password.length < 12 || row.password.length > 128) invalid('use a temporary password of 12–128 characters.');
+    const defence_date = defenceDate(expected_defence);
+    return { full_name, username, thesis_title, expected_defence, defence_date, password: row.password, status: 'pending', detail: '' };
+  });
+}
+function renderImport() {
+  const target = modal.querySelector('#student-import-preview'); if (!target || !studentImport) return;
+  const { rows, running, done } = studentImport;
+  const count = status => rows.filter(row => row.status === status).length;
+  const candidates = rows.filter(row => row.status === 'pending').length;
+  const controls = `<div class="form-actions">${done ? '<button class="secondary" data-action="download-import-results">Download results</button>' : ''}<button class="secondary" data-action="close" ${running ? 'disabled' : ''}>${done ? 'Close' : 'Cancel'}</button>${!done ? `<button class="primary" data-action="create-import" ${running || !candidates ? 'disabled' : ''}>Create ${candidates} accounts</button>` : ''}</div>`;
+  target.innerHTML = `<p role="status" id="student-import-status">${running ? 'Creating accounts… Keep this page open.' : done ? `Finished: ${count('created')} created, ${count('skipped')} skipped, ${count('failed')} need attention.` : `${rows.length} students loaded; ${candidates} new accounts to create.`}</p>${controls}<div class="table-wrap"><table><thead><tr><th>Student</th><th>Thesis</th><th>Expected defence</th><th>Status</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${e(row.full_name)}</strong><br><small>@${e(row.username)}</small></td><td class="title-cell">${e(row.thesis_title)}</td><td>${row.defence_date ? e(defenceText(row.defence_date)) : '—'}</td><td>${badge(row.status, row.status === 'created' ? 'green' : row.status === 'failed' ? 'amber' : '')}</td></tr>`).join('')}</tbody></table></div>${done ? '<p class="small muted">Use the temporary password from your private account list only for rows marked created. Skipped accounts keep their existing password. If a request failed, check the student list before retrying, and check your project’s password requirements.</p>' : ''}`;
+  modal.querySelector('[data-action="close"]').disabled = running;
+  modal.querySelector('[name="student-import-file"]').disabled = running || done;
+}
+async function createImport() {
+  if (!isSupervisor() || !studentImport || studentImport.running || studentImport.done) return;
+  const batch = studentImport;
+  batch.running = true; renderImport();
+  try {
+    // Refresh before creating to avoid overwriting accounts added since the preview.
+    await refresh();
+    for (const row of batch.rows) if (data.profiles.some(p => p.username === row.username)) { row.status = 'skipped'; row.detail = 'Username already exists; kept unchanged.'; row.password = ''; }
+    for (const row of batch.rows) {
+      if (row.status !== 'pending') continue;
+      try {
+        await store.account('create', { full_name: row.full_name, username: row.username, thesis_title: row.thesis_title, defence_date: row.defence_date, password: row.password });
+        row.status = 'created';
+      } catch { row.status = 'failed'; row.detail = 'Check whether the username already exists and whether the password meets project requirements.'; }
+      // The import file remains with the supervisor; passwords are not used in the result export.
+      row.password = ''; renderImport();
+    }
+    batch.done = true;
+    await refresh();
+  } finally {
+    batch.running = false;
+    renderImport();
+  }
+}
+function downloadImportResults() {
+  if (!isSupervisor() || !studentImport?.done) return;
+  const result = studentImport.rows.map(({ full_name, username, expected_defence, status, detail }) => ({ full_name, username, expected_defence, status, detail }));
+  const url = URL.createObjectURL(new Blob([JSON.stringify({ students: result }, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a'); link.href = url; link.download = 'thesis-import-results.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function studentDialog(id) {
   const p=data.profiles.find(p=>p.id===id); if (!p) return;
-  dialog(p.full_name,`<p class="muted">@${e(p.username)} · ${p.active?'Active':'Archived'}</p><h3>${e(p.thesis_title||'Title to be agreed')}</h3><p>${p.defence_date?'Defence: '+e(dateText(p.defence_date)):''}</p><div class="document-actions"><button class="secondary" data-action="password" data-id="${e(id)}">Reset password</button><button class="secondary ${p.active?'danger':''}" data-action="archive" data-id="${e(id)}">${p.active?'Archive account':'Restore account'}</button></div><p class="small muted">Archiving removes sign-in access and releases future bookings. Reports and feedback are retained.</p><h3>Progress history</h3>${sortedReports().filter(r=>r.student_id===id).map(reportCard).join('')||'<p class="muted">No updates yet.</p>'}<h3>Next steps</h3>${taskList(data.tasks.filter(t=>t.student_id===id))}<form data-form="task" data-id="${e(id)}">${field('New next step','<input name="title" required maxlength="500">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="primary">Assign next step</button></form>`,true);
+  dialog(p.full_name,`<p class="muted">@${e(p.username)} · ${p.active?'Active':'Archived'}</p><h3>${e(p.thesis_title||'Title to be agreed')}</h3><p>${p.defence_date?'Expected defence: '+e(defenceText(p.defence_date)):''}</p><div class="document-actions"><button class="secondary" data-action="password" data-id="${e(id)}">Reset password</button><button class="secondary ${p.active?'danger':''}" data-action="archive" data-id="${e(id)}">${p.active?'Archive account':'Restore account'}</button></div><p class="small muted">Archiving removes sign-in access and releases future bookings. Reports and feedback are retained.</p><h3>Progress history</h3>${sortedReports().filter(r=>r.student_id===id).map(reportCard).join('')||'<p class="muted">No updates yet.</p>'}<h3>Next steps</h3>${taskList(data.tasks.filter(t=>t.student_id===id))}<form data-form="task" data-id="${e(id)}">${field('New next step','<input name="title" required maxlength="500">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="primary">Assign next step</button></form>`,true);
 }
 function zonedTime(day, clock) {
   const [y,m,d]=day.split('-').map(Number), [h,min]=clock.split(':').map(Number); const target=Date.UTC(y,m-1,d,h,min); let guess=target;
@@ -163,7 +235,10 @@ function meetingDialog(id) {
 document.addEventListener('click', async event => {
   const button=event.target.closest('[data-action]'); if (!button) return;
   const action=button.dataset.action, id=button.dataset.id;
-  if (action==='close') return closeDialog();
+  if (action==='close') { if (!studentImport?.running) closeDialog(); return; }
+  if (['import-students', 'create-import', 'download-import-results', 'add-student', 'student', 'password', 'archive'].includes(action) && !isSupervisor()) return;
+  if (action==='import-students') return importDialog();
+  if (action==='download-import-results') return downloadImportResults();
   if (['connection','clear-connection'].includes(action) && !canConfigure()) return;
   if (['copy-invite','switch-demo','reset-demo','check-setup'].includes(action) && !isSupervisor()) return;
   if (action==='demo' && (!DEMO || user)) return;
@@ -182,6 +257,7 @@ document.addEventListener('click', async event => {
   if (action==='meeting') return meetingDialog(id);
   if (action==='password') { closeDialog(); return dialog('Reset student password',`<form data-form="password" data-id="${e(id)}">${field('New password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">')}${actions('Reset password')}</form>`); }
   await busy(button, async()=>{
+    if (action==='create-import') { await createImport(); return; }
     if (action==='live') { await store?.logout(); store?.dispose(); location.assign(location.pathname + (getConnection()?'':'?setup=1')); return; }
     if (action==='check-setup' && isSupervisor() && store.mode==='live') setupDialog(await store.checkSetup());
     if (action==='demo') { store?.dispose(); store=new DemoStore(); localStorage.setItem('thesis.mode.v1','demo'); user=await store.login(button.dataset.role==='supervisor'?'ali':'alex','demo-thesis-2026'); view='overview'; await refresh(); }
@@ -206,7 +282,7 @@ document.addEventListener('submit', event => {
     if (type==='connection') { if (!canConfigure()) return; setConnection(values.url,values.key); await store?.logout(); store?.dispose(); store=new SupabaseStore(getConnection()); localStorage.setItem('thesis.mode.v1','live'); user=null; closeDialog(); location.assign(location.pathname); return; }
     if (type==='my-profile') { await store.updateMyProfile(values.full_name); await refresh(); toast('Your name has been updated.'); return; }
     if (type==='my-password') { await store.changeMyPassword(values.current_password,values.new_password,values.confirm_password); form.reset(); toast('Password changed. Use your new password next time you sign in.'); return; }
-    if (type==='student') { await store.account('create',{...values,username:values.username.trim().toLowerCase()}); toast('Student account created. Share the login privately.'); }
+    if (type==='student') { if (!isSupervisor()) return; await store.account('create',{full_name:values.full_name,password:values.password,thesis_title:values.thesis_title,defence_date:defenceDate(values.expected_defence),username:values.username.trim().toLowerCase()}); toast('Student account created. Share the login privately.'); }
     if (type==='password') { await store.account('password',{student_id:form.dataset.id,password:values.password}); toast('Password reset.'); }
     if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
     if (type==='comment') { await store.comment(form.dataset.id,values.body.trim()); const id=form.dataset.id; closeDialog(); await refresh(); reportDialog(id); toast('Feedback added.'); return; }
@@ -224,6 +300,22 @@ document.addEventListener('submit', event => {
   });
 });
 document.addEventListener('change', event=>{
+  if (event.target.name==='student-import-file') {
+    const input = event.target, file = input.files[0];
+    if (!isSupervisor() || loading || studentImport?.running || studentImport?.done) return;
+    studentImport = null; modal.querySelector('#student-import-preview').innerHTML = '';
+    if (!file) return;
+    input.disabled = true;
+    busy(null, async()=>{
+      try {
+        if (file.size > 1048576) throw new Error('Choose an account list smaller than 1 MB.');
+        const rows = readStudentImport(await file.text());
+        if (!input.isConnected || input.files[0] !== file || !isSupervisor()) return;
+        for (const row of rows) if (data.profiles.some(p => p.username === row.username)) { row.status = 'skipped'; row.detail = 'Username already exists; kept unchanged.'; row.password = ''; }
+        studentImport = { rows, running: false, done: rows.every(row => row.status === 'skipped') }; renderImport();
+      } finally { if (input.isConnected && !studentImport?.done) input.disabled = false; }
+    });
+  }
   if (event.target.id==='show-archived') { showArchived=event.target.checked; render(); }
   if (event.target.dataset.task) { const input=event.target, checked=input.checked; busy(null,async()=>{try { await store.completeTask(input.dataset.task,checked); await refresh(); if(modal.open)closeDialog(); } catch(err) { input.checked=!checked; throw err; }}); }
   if (event.target.name==='pdf') validatePDF(event.target.files[0]).catch(err=>{event.target.value='';toast(err.message,true);});
@@ -231,7 +323,8 @@ document.addEventListener('change', event=>{
 document.addEventListener('input', event=>{
   if(event.target.id==='student-search'){studentFilter=event.target.value;const pos=event.target.selectionStart;render();const input=document.querySelector('#student-search');input.focus();if(input.type==='text')input.setSelectionRange(pos,pos);}
 });
-modal.addEventListener('click', event=>{if(event.target===modal&&event.clientX<modal.getBoundingClientRect().left)closeDialog();});
+modal.addEventListener('click', event=>{if(!studentImport?.running&&event.target===modal&&event.clientX<modal.getBoundingClientRect().left)closeDialog();});
+modal.addEventListener('cancel', event => { event.preventDefault(); if (!studentImport?.running) closeDialog(); });
 
 // An invitation opened in the current tab changes only the fragment. Restart once
 // so startup validates and saves it, just as it does on a fresh page visit.
