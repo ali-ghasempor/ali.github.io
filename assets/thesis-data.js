@@ -1,4 +1,5 @@
 import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js';
+import { BackendSession } from './thesis-backend.js';
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -38,10 +39,14 @@ const localConnectionAllowed = () => ['localhost', '127.0.0.1', '[::1]'].include
 export function getConnection() {
   // The published site always uses its configured project. Local setup may override it.
   if (localConnectionAllowed()) {
-    try { const c = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null'); if (c) return validateConnection(c.url, c.key); }
+    try {
+      const c = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null');
+      if (c) { const local = validateConnection(c.url, c.key); if (local.url !== PUBLIC_SUPABASE_CONFIG.url) return local; }
+    }
     catch { /* Fall back to the website's public configuration. */ }
   }
-  return validateConnection(PUBLIC_SUPABASE_CONFIG.url, PUBLIC_SUPABASE_CONFIG.key);
+  return { ...validateConnection(PUBLIC_SUPABASE_CONFIG.url, PUBLIC_SUPABASE_CONFIG.key),
+    ...(PUBLIC_SUPABASE_CONFIG.backend ? { backend: PUBLIC_SUPABASE_CONFIG.backend } : {}) };
 }
 export function validateConnection(url, key) {
   const parsed = new URL(url.trim());
@@ -73,9 +78,14 @@ export class SupabaseStore {
       const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
       for (const key of keys) if (key?.startsWith('thesis.auth.')) storage.removeItem(key);
     }
-    this.client = window.supabase.createClient(config.url, config.key, { auth: { storageKey: `thesis.auth.${new URL(config.url).hostname}`, persistSession: false, autoRefreshToken: true, detectSessionInUrl: false } });
+    this.backend = config.backend ? new BackendSession(config) : null;
+    this.client = window.supabase.createClient(config.url, config.key, {
+      auth: { storageKey: `thesis.auth.${new URL(config.url).hostname}`, persistSession: false, autoRefreshToken: true, detectSessionInUrl: false },
+      ...(this.backend ? { global: { fetch: this.backend.fetch.bind(this.backend) } } : {})
+    });
   }
   async currentUser() {
+    if (this.backend) { this.user = await this.backend.session(); return this.user; }
     const { data: session } = await this.client.auth.getSession();
     if (!session.session) return null;
     const { data, error } = await this.client.auth.getUser(); fail(error);
@@ -88,11 +98,16 @@ export class SupabaseStore {
     this.user = data; return data;
   }
   async login(username, password) {
+    if (this.backend) { loginEmail(username); this.user = await this.backend.login(username.trim().toLowerCase(), password); return this.user; }
     const { data, error } = await this.client.auth.signInWithPassword({ email: loginEmail(username), password });
     if (error) throw new Error(error.code === 'email_not_confirmed' ? 'Your account email is not confirmed. Ask your supervisor to confirm the Auth user in Supabase.' : 'Real workspace sign-in failed. Check your username and Supabase account password.');
     try { return await this.profile(data.user.id); } catch (e) { await this.logout(); throw e; }
   }
-  async logout() { const { error } = await this.client.auth.signOut(); fail(error); this.user = null; }
+  async logout() {
+    if (this.backend) await this.backend.logout();
+    else { const { error } = await this.client.auth.signOut(); fail(error); }
+    this.user = null;
+  }
   async updateMyProfile(full_name) {
     const { error } = await this.client.rpc('thesis_update_my_profile', { new_full_name: accountName(full_name) });
     if (error?.code === 'PGRST202') throw new Error('Name changes need the account update. Ask your supervisor to run supabase/account-update.sql.');
@@ -100,6 +115,7 @@ export class SupabaseStore {
   }
   async changeMyPassword(current, password, confirmation) {
     passwordChange(current, password, confirmation);
+    if (this.backend) return this.backend.changePassword(current, password);
     // A fresh password sign-in also satisfies Supabase's recent-session requirement.
     const { data, error } = await this.client.auth.signInWithPassword({ email: loginEmail(this.user.username), password: current });
     if (error?.code === 'invalid_credentials') throw new Error('Your current password is incorrect.');
