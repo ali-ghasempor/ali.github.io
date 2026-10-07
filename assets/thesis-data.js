@@ -1,3 +1,5 @@
+import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js';
+
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export function httpsURL(value) {
@@ -32,7 +34,15 @@ const uuid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
 const fail = error => { if (error) throw new Error(error.message || String(error)); };
 const CONFIG_KEY = 'thesis.connection.v1';
-export function getConnection() { try { const c = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null'); return c ? validateConnection(c.url, c.key) : null; } catch { return null; } }
+const localConnectionAllowed = () => ['localhost', '127.0.0.1', '[::1]'].includes(globalThis.location?.hostname);
+export function getConnection() {
+  // The published site always uses its configured project. Local setup may override it.
+  if (localConnectionAllowed()) {
+    try { const c = JSON.parse(localStorage.getItem(CONFIG_KEY) || 'null'); if (c) return validateConnection(c.url, c.key); }
+    catch { /* Fall back to the website's public configuration. */ }
+  }
+  return validateConnection(PUBLIC_SUPABASE_CONFIG.url, PUBLIC_SUPABASE_CONFIG.key);
+}
 export function validateConnection(url, key) {
   const parsed = new URL(url.trim());
   if (parsed.protocol !== 'https:' || !/^[a-z0-9-]+\.supabase\.co$/.test(parsed.hostname) || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password)
@@ -40,7 +50,15 @@ export function validateConnection(url, key) {
   if (!/^sb_publishable_[A-Za-z0-9_-]+$/.test(key.trim())) throw new Error('Use a publishable key starting with sb_publishable_.');
   return { url: parsed.origin, key: key.trim() };
 }
-export function setConnection(url, key) { localStorage.setItem(CONFIG_KEY, JSON.stringify(validateConnection(url, key))); }
+export function setConnection(url, key) {
+  const config = validateConnection(url, key);
+  if (!localConnectionAllowed()) {
+    const published = getConnection();
+    if (config.url !== published.url || config.key !== published.key) throw new Error('This connection link is for a different workspace. Open the normal website link to sign in.');
+    return;
+  }
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+}
 export function clearConnection() { localStorage.removeItem(CONFIG_KEY); }
 export function createSignInLink(config, target = 'https://ali.cyberwise.ee/thesis-manager.html') {
   const link = new URL(target); link.search = ''; link.hash = new URLSearchParams(validateConnection(config.url, config.key)).toString();
@@ -50,7 +68,12 @@ export function createSignInLink(config, target = 'https://ali.cyberwise.ee/thes
 export class SupabaseStore {
   constructor(config) {
     this.mode = 'live';
-    this.client = window.supabase.createClient(config.url, config.key, { auth: { storageKey: `thesis.auth.${new URL(config.url).hostname}`, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false } });
+    // Remove sessions persisted by older releases without reading or reusing their tokens.
+    for (const storage of [localStorage, sessionStorage]) {
+      const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+      for (const key of keys) if (key?.startsWith('thesis.auth.')) storage.removeItem(key);
+    }
+    this.client = window.supabase.createClient(config.url, config.key, { auth: { storageKey: `thesis.auth.${new URL(config.url).hostname}`, persistSession: false, autoRefreshToken: true, detectSessionInUrl: false } });
   }
   async currentUser() {
     const { data: session } = await this.client.auth.getSession();
