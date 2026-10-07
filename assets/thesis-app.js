@@ -39,9 +39,10 @@ function field(label, html, extra = '') { return `<label class="field ${extra}">
 function actions(label) { return `<div class="form-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit">${e(label)}</button></div>`; }
 async function busy(button, fn) {
   if (loading) return; loading = true;
-  const old = button?.textContent; if (button) { button.disabled = true; button.textContent = 'Working…'; }
+  const old = button?.textContent, wasDisabled = button?.disabled;
+  if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = 'Working…'; }
   try { await fn(); } catch (err) { toast(err.message || 'Something went wrong. Please try again.', true); }
-  finally { loading = false; if (button?.isConnected) { button.disabled = false; button.textContent = old; } }
+  finally { loading = false; if (button?.isConnected) { button.disabled = wasDisabled; button.removeAttribute('aria-busy'); button.textContent = old; } }
 }
 async function refresh() {
   data = await store.load();
@@ -57,10 +58,10 @@ function renderLogin() {
       <div><span class="eyebrow">A CLEARER WAY TO WORK TOGETHER</span><h1>Keep the next<br>step in sight.</h1><p>One place for your thesis progress, meeting plans, and feedback. Less searching. More moving forward.</p>
       <div class="intro-features"><span>01 &nbsp; Share your progress</span><span>02 &nbsp; Plan your next meeting</span><span>03 &nbsp; Keep feedback together</span></div></div><p class="intro-footer">Tallinn University of Technology · IT College</p></section>
     <section class="login-content"><div class="login-card"><span class="eyebrow">WELCOME BACK</span><h2>Your thesis starts here.</h2><p>Sign in with the account your supervisor created.</p>
-      ${store?.mode === 'demo' ? '<div class="notice">Local demo · Fictional accounts for testing.</div>' : !store ? '<div class="notice">Open the sign-in link provided by your supervisor to connect this browser.</div>' : ''}
+      ${store?.mode === 'demo' ? '<div class="notice">Local demo · Fictional accounts for testing.</div>' : !store ? '<div class="notice" id="connection-help">This browser is not connected yet. Open the workspace sign-in link your supervisor sent you, then enter your username and password.</div>' : ''}
       <form data-form="login">${field('Username', '<input name="username" autocomplete="username" required maxlength="32" placeholder="Your username">')}
       ${field('Password', '<input name="password" type="password" autocomplete="current-password" required placeholder="Your password">')}
-      <button class="primary full" type="submit" ${!store ? 'disabled' : ''}>Sign in</button></form>
+      <button class="primary full" type="submit" ${!store ? 'disabled aria-describedby="connection-help"' : ''}>${store ? 'Sign in' : 'Sign-in link needed'}</button></form>
       <p class="small muted">Forgot your password? Ask your supervisor for a reset.</p>
       ${DEMO ? '<div class="divider"><span>Local testing</span></div><div class="demo-buttons"><button class="secondary" data-action="demo" data-role="supervisor">Supervisor demo</button><button class="secondary" data-action="demo" data-role="student">Student demo</button></div><p class="small muted">Demo logins: <strong>ali</strong> or <strong>alex</strong><br>Password: <code>demo-thesis-2026</code></p><button class="secondary full real-switch" data-action="live">Use real workspace →</button>' : ''}
       ${SETUP ? `<button class="text-button" data-action="connection">${live ? 'Change Supabase connection' : 'Connect your Supabase project'} →</button>` : ''}
@@ -200,7 +201,7 @@ document.addEventListener('submit', event => {
   const values=Object.fromEntries(new FormData(form));
   busy(form.querySelector('[type="submit"],button:not([type])'),async()=>{
     const type=form.dataset.form;
-    if (type==='login') { user=await store.login(values.username,values.password); view='overview'; try { await refresh(); } catch(err) { user=null; await store.logout(); render(); throw err; } return; }
+    if (type==='login') { if (!store) throw new Error('Open your workspace sign-in link first to connect this browser.'); user=await store.login(values.username,values.password); view='overview'; try { await refresh(); } catch(err) { user=null; await store.logout(); render(); throw err; } return; }
     if (type==='connection') { if (!canConfigure()) return; setConnection(values.url,values.key); await store?.logout(); store?.dispose(); store=new SupabaseStore(getConnection()); localStorage.setItem('thesis.mode.v1','live'); user=null; closeDialog(); location.assign(location.pathname); return; }
     if (type==='my-profile') { await store.updateMyProfile(values.full_name); await refresh(); toast('Your name has been updated.'); return; }
     if (type==='my-password') { await store.changeMyPassword(values.current_password,values.new_password,values.confirm_password); form.reset(); toast('Password changed. Use your new password next time you sign in.'); return; }
@@ -230,6 +231,13 @@ document.addEventListener('input', event=>{
   if(event.target.id==='student-search'){studentFilter=event.target.value;const pos=event.target.selectionStart;render();const input=document.querySelector('#student-search');input.focus();if(input.type==='text')input.setSelectionRange(pos,pos);}
 });
 modal.addEventListener('click', event=>{if(event.target===modal&&event.clientX<modal.getBoundingClientRect().left)closeDialog();});
+
+// An invitation opened in the current tab changes only the fragment. Restart once
+// so startup validates and saves it, just as it does on a fresh page visit.
+window.addEventListener('hashchange', () => {
+  const invitation = new URLSearchParams(location.hash.slice(1));
+  if (invitation.has('url') && invitation.has('key')) location.reload();
+});
 
 async function start() {
   if (!LOCAL && location.protocol==='http:') { location.replace('https:'+location.href.slice(5)); return; }
