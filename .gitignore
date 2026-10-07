@@ -1,0 +1,12 @@
+# Local connection settings and credentials
+.env
+.env.*
+!.env.example
+.local/
+test-results/
+node_modules/
+supabase/
+tests/
+tools/
+PRODUCTION.md
+THESIS_SETUP.md

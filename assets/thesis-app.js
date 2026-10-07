@@ -1,0 +1,245 @@
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, createSignInLink, validatePDF, httpsURL } from './thesis-data.js';
+
+const app = document.querySelector('#app');
+const modal = document.querySelector('#modal');
+const TIMEZONE = 'Europe/Tallinn';
+const LOCAL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+// Local tools require an explicit URL; normal sign-in never exposes them.
+const DEMO = LOCAL && new URLSearchParams(location.search).get('demo') === '1';
+const SETUP = LOCAL && new URLSearchParams(location.search).get('setup') === '1';
+let store, user, toastTimer, loading = false;
+let data = { profiles: [], reports: [], comments: [], tasks: [], slots: [] };
+let view = 'overview', studentFilter = '', showArchived = false;
+const dateKey = date => new Intl.DateTimeFormat('sv-SE', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(date));
+const time = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit' }).format(new Date(date));
+const dateText = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(date.length === 10 ? `${date}T12:00:00Z` : date));
+let selectedDay = dateKey(new Date()), month = selectedDay.slice(0, 7);
+const initials = name => name.split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
+const studentName = id => data.profiles.find(p => p.id === id)?.full_name || 'Student';
+const isSupervisor = () => user?.role === 'supervisor';
+const canConfigure = () => isSupervisor() || (!user && SETUP);
+const sortedReports = () => [...data.reports].sort((a, b) => b.created_at.localeCompare(a.created_at));
+const futureMeetings = () => data.slots.filter(s => s.booked_by && new Date(s.starts_at) > new Date()).sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+const openTasks = () => data.tasks.filter(t => !t.completed);
+const hasFeedback = r => data.comments.some(c => c.report_id === r.id);
+const icons = { overview: '◫', students: '◎', meetings: '▦', progress: '▤', settings: '⚙' };
+const safeShareURL = value => { try { return httpsURL(value); } catch { return null; } };
+const empty = (title, text) => `<div class="empty"><span class="empty-icon">◇</span><h3>${e(title)}</h3><p>${e(text)}</p></div>`;
+const badge = (text, type = '') => `<span class="badge ${type}">${e(text)}</span>`;
+function toast(message, error = false) {
+  const el = document.querySelector('#toast'); el.textContent = message; el.className = `toast ${error ? 'error' : ''}`; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, error ? 12000 : 4500);
+}
+function dialog(title, html, wide = false) {
+  modal.className = wide ? 'wide' : ''; modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${e(title)}</h2><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>${html}`;
+  modal.showModal();
+}
+function closeDialog() { modal.close(); modal.innerHTML = ''; }
+function field(label, html, extra = '') { return `<label class="field ${extra}"><span>${e(label)}</span>${html}</label>`; }
+function actions(label) { return `<div class="form-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit">${e(label)}</button></div>`; }
+async function busy(button, fn) {
+  if (loading) return; loading = true;
+  const old = button?.textContent; if (button) { button.disabled = true; button.textContent = 'Working…'; }
+  try { await fn(); } catch (err) { toast(err.message || 'Something went wrong. Please try again.', true); }
+  finally { loading = false; if (button?.isConnected) { button.disabled = false; button.textContent = old; } }
+}
+async function refresh() {
+  data = await store.load();
+  const profile = data.profiles.find(p => p.id === user.id && p.active);
+  if (!profile) { await store.logout(); user = null; render(); throw new Error('Your account no longer has access.'); }
+  user = profile;
+  render();
+}
+function renderLogin() {
+  const live = store?.mode === 'live';
+  app.innerHTML = `<main class="login-layout">
+    <section class="login-intro"><a class="brand" href="index.html"><span class="brand-mark">A</span><span>Ali Ghasempour<small>THESIS WORKSPACE</small></span></a>
+      <div><span class="eyebrow">A CLEARER WAY TO WORK TOGETHER</span><h1>Keep the next<br>step in sight.</h1><p>One place for your thesis progress, meeting plans, and feedback. Less searching. More moving forward.</p>
+      <div class="intro-features"><span>01 &nbsp; Share your progress</span><span>02 &nbsp; Plan your next meeting</span><span>03 &nbsp; Keep feedback together</span></div></div><p class="intro-footer">Tallinn University of Technology · IT College</p></section>
+    <section class="login-content"><div class="login-card"><span class="eyebrow">WELCOME BACK</span><h2>Your thesis starts here.</h2><p>Sign in with the account your supervisor created.</p>
+      ${store?.mode === 'demo' ? '<div class="notice">Local demo · Fictional accounts for testing.</div>' : !store ? '<div class="notice">Open the sign-in link provided by your supervisor to connect this browser.</div>' : ''}
+      <form data-form="login">${field('Username', '<input name="username" autocomplete="username" required maxlength="32" placeholder="Your username">')}
+      ${field('Password', '<input name="password" type="password" autocomplete="current-password" required placeholder="Your password">')}
+      <button class="primary full" type="submit" ${!store ? 'disabled' : ''}>Sign in</button></form>
+      <p class="small muted">Forgot your password? Ask your supervisor for a reset.</p>
+      ${DEMO ? '<div class="divider"><span>Local testing</span></div><div class="demo-buttons"><button class="secondary" data-action="demo" data-role="supervisor">Supervisor demo</button><button class="secondary" data-action="demo" data-role="student">Student demo</button></div><p class="small muted">Demo logins: <strong>ali</strong> or <strong>alex</strong><br>Password: <code>demo-thesis-2026</code></p><button class="secondary full real-switch" data-action="live">Use real workspace →</button>' : ''}
+      ${SETUP ? `<button class="text-button" data-action="connection">${live ? 'Change Supabase connection' : 'Connect your Supabase project'} →</button>` : ''}
+      <a class="back-home" href="index.html">← Back to personal website</a>
+    </div></section></main>`;
+}
+function render() {
+  if (!user) return renderLogin();
+  const supervisor = isSupervisor();
+  const nav = supervisor ? [['overview','Overview'],['students','Students'],['meetings','Meetings'],['progress','Progress & files'],['settings','Settings']] : [['overview','My overview'],['progress','My progress'],['meetings','Book a meeting'],['settings','Account']];
+  const titles = { overview: ['A little clarity, every week.', supervisor ? 'Your supervision at a glance.' : 'Your progress and next steps, in one place.'], students: ['Your students', 'Keep each thesis and its next step in view.'], meetings: ['Make time for progress', 'Publish availability, book a time, and keep the discussion together.'], progress: ['Progress & feedback', supervisor ? 'Read the latest updates and leave clear next steps.' : 'Share your work and revisit your supervisor’s feedback.'], settings: supervisor ? ['Workspace settings', 'Manage your account and workspace.'] : ['Your account', 'Update your name and choose your own password.'] };
+  app.innerHTML = `<div class="workspace"><aside class="sidebar"><a class="brand" href="index.html"><span class="brand-mark">A</span><span>Thesis workspace<small>ALI GHASEMPOUR</small></span></a>
+    <div class="sidebar-label">${supervisor ? 'SUPERVISION' : 'MY THESIS'}</div><nav aria-label="Workspace">${nav.map(([key,label]) => `<button class="nav-item ${view===key?'active':''}" data-action="view" data-view="${key}" ${view===key?'aria-current="page"':''}><span aria-hidden="true">${icons[key]}</span>${label}${key==='progress' && supervisor && data.reports.some(r=>!hasFeedback(r)) ? '<i class="nav-dot"></i>' : ''}</button>`).join('')}</nav>
+    <div class="sidebar-bottom"><a href="index.html">← Personal website</a><div class="user-card"><span class="avatar">${e(initials(user.full_name))}</span><div><strong>${e(user.full_name)}</strong><small>${supervisor?'Supervisor':'Student'}</small></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">↗</button></div></div></aside>
+    <main class="main"><header class="topbar"><span>${supervisor?'Supervisor workspace':'Student workspace'}</span><div>${badge(store.mode==='demo'?'Local demo':supervisor?'Supabase connected':'Signed in',store.mode==='demo'?'amber':'green')}<button class="icon-button" data-action="refresh" aria-label="Refresh workspace">↻</button></div></header>
+    ${store.mode==='demo'?'<div class="demo-banner">LOCAL DEMO · Fictional sample records, stored only in this browser.</div>':''}
+    <div class="page"><div class="page-heading"><div><span class="eyebrow">${e(dateText(new Date().toISOString()))}</span><h1>${titles[view][0]}</h1><p>${titles[view][1]}</p></div>${view==='students'?'<button class="primary" data-action="add-student">+ Add student</button>':view==='progress'&&!supervisor?'<button class="primary" data-action="new-report">+ Share progress</button>':view==='meetings'&&supervisor?'<button class="primary" data-action="availability">+ Add availability</button>':''}</div>
+    ${view==='overview'?overview():view==='students'?students():view==='progress'?progress():view==='meetings'?meetings():settings()}</div></main></div>`;
+}
+function metric(label,value,note,tone='') { return `<div class="metric ${tone}"><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`; }
+function overview() {
+  const supervisor = isSupervisor();
+  const upcoming = futureMeetings(); const reports = sortedReports();
+  return `<div class="metrics">${metric(supervisor?'Active students':'Progress updates',supervisor?data.profiles.filter(p=>p.role==='student'&&p.active).length:reports.length,supervisor?'Theses in progress':'A record of your work')}${metric('Upcoming meetings',upcoming.length,'Time set aside to talk')}${metric(supervisor?'Awaiting feedback':'Open next steps',supervisor?reports.filter(r=>!hasFeedback(r)).length:openTasks().length,supervisor?'Updates to review':'Keep the work moving','accent')}${metric('Shared documents',reports.filter(r=>r.file_path||r.share_url).length,'PDFs and sharing links')}</div>
+    ${!supervisor?`<section class="thesis-card"><div><span class="eyebrow">YOUR THESIS</span><h2>${e(user.thesis_title || 'Your thesis title will appear here')}</h2><p>${user.defence_date?'Defence: '+e(dateText(user.defence_date)):'Defence date to be agreed with your supervisor'}</p></div><button class="primary" data-action="new-report">Share progress →</button></section>`:''}
+    <div class="overview-grid"><section class="panel"><div class="panel-heading"><h2>Latest progress</h2><button class="text-button" data-action="view" data-view="progress">View all →</button></div>${reports.length?reports.slice(0,4).map(reportCard).join(''):empty('A fresh start','Progress updates will appear here when students share their work.')}</section>
+    <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2></div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
+}
+function reportCard(r) {
+  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(hasFeedback(r)?'Feedback added':'Awaiting feedback',hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${r.kind==='thesis'?'Thesis draft':'Progress update'}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
+}
+function taskList(tasks) {
+  if (!tasks.length) return empty('Nothing outstanding','New next steps from your supervisor will appear here.');
+  return `<div class="tasks">${tasks.map(t => `<label class="task"><input type="checkbox" data-task="${e(t.id)}" ${t.completed?'checked':''}><span><strong class="${t.completed?'done':''}">${e(t.title)}</strong><small>${isSupervisor()?e(studentName(t.student_id))+' · ':''}${t.due_date?'Due '+e(dateText(t.due_date)):'No deadline set'}</small></span></label>`).join('')}</div>`;
+}
+function students() {
+  const list = data.profiles.filter(p=>p.role==='student'&&(showArchived||p.active)&&`${p.full_name} ${p.username} ${p.thesis_title}`.toLowerCase().includes(studentFilter.toLowerCase()));
+  return `<section class="panel"><div class="toolbar"><input id="student-search" type="search" aria-label="Search students" placeholder="Search names or thesis titles…" value="${e(studentFilter)}"><label class="check"><input type="checkbox" id="show-archived" ${showArchived?'checked':''}> Include archived</label></div><div class="table-wrap"><table><thead><tr><th>Student</th><th>Thesis</th><th>Defence</th><th>Latest progress</th><th></th></tr></thead><tbody>${list.map(p=>{const latest=sortedReports().find(r=>r.student_id===p.id); return `<tr><td><div class="person"><span class="avatar soft">${e(initials(p.full_name))}</span><div><strong>${e(p.full_name)}</strong><small>@${e(p.username)} ${!p.active?'· Archived':''}</small></div></div></td><td class="title-cell">${e(p.thesis_title||'Title to be agreed')}</td><td>${p.defence_date?e(dateText(p.defence_date)):'—'}</td><td>${latest?e(dateText(latest.created_at)):'No updates yet'}</td><td><button class="secondary small-button" data-action="student" data-id="${e(p.id)}">Open →</button></td></tr>`;}).join('')}</tbody></table></div>${list.length?'':empty('No students found','Add a student or change your search.')}</section>`;
+}
+function progress() { const reports=sortedReports(); return `<div class="progress-layout"><section class="panel"><div class="panel-heading"><h2>${isSupervisor()?'Student submissions':'Your submissions'}</h2><span class="muted small">${reports.length} updates</span></div>${reports.length?reports.map(reportCard).join(''):empty('Start with a short update','Share what you have done, what comes next, and where you need help.')}</section>${!isSupervisor()?`<section class="panel"><div class="panel-heading"><h2>Your next steps</h2></div>${taskList([...data.tasks].sort((a,b)=>Number(a.completed)-Number(b.completed)))}</section>`:''}</div>`; }
+function meetingCard(s) {
+  return `<button class="meeting-card" data-action="meeting" data-id="${e(s.id)}"><div class="date-tile"><strong>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,day:'numeric'})}</strong><span>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,month:'short'})}</span></div><div><strong>${isSupervisor()?e(studentName(s.booked_by)):'Supervision meeting'}</strong><small>${e(time(s.starts_at))}–${e(time(s.ends_at))} · ${e(s.location)}</small>${s.meeting_notes?badge('Meeting notes added','green'):''}</div><span class="arrow">→</span></button>`;
+}
+function calendar() {
+  const [y,m]=month.split('-').map(Number); const first=new Date(Date.UTC(y,m-1,1));
+  const offset=(first.getUTCDay()+6)%7; const start=new Date(Date.UTC(y,m-1,1-offset));
+  const cells=Array.from({length:42},(_,i)=>{const day=new Date(+start+i*86400000).toISOString().slice(0,10); const slots=data.slots.filter(s=>dateKey(s.starts_at)===day); return `<button class="calendar-day ${day.slice(0,7)!==month?'outside':''} ${day===selectedDay?'selected':''} ${day===dateKey(new Date())?'today':''}" data-action="day" data-day="${day}" aria-label="${e(dateText(day))}${slots.length?', '+slots.length+' slots':''}" aria-pressed="${day===selectedDay}"><span>${Number(day.slice(-2))}</span>${slots.length?'<i></i>':''}</button>`;});
+  return `<div class="calendar"><div class="calendar-heading"><button class="icon-button" data-action="month" data-offset="-1" aria-label="Previous month">‹</button><h2>${new Intl.DateTimeFormat('en-GB',{timeZone:'UTC',month:'long',year:'numeric'}).format(first)}</h2><button class="icon-button" data-action="month" data-offset="1" aria-label="Next month">›</button></div><div class="calendar-grid">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<span class="weekday">${d}</span>`).join('')}${cells.join('')}</div><p class="small muted">● Meeting slots · All times in Europe/Tallinn</p></div>`;
+}
+function meetings() {
+  const slots=data.slots.filter(s=>dateKey(s.starts_at)===selectedDay).sort((a,b)=>a.starts_at.localeCompare(b.starts_at));
+  return `<div class="calendar-layout"><section class="panel">${calendar()}</section><section class="panel"><div class="panel-heading"><div><h2>${e(dateText(selectedDay))}</h2><p class="small muted">${isSupervisor()?'Your availability and bookings':'Choose an available time to meet'}</p></div></div><div class="slot-list">${slots.length?slots.map(s=>`<div class="slot"><div><strong>${e(time(s.starts_at))}–${e(time(s.ends_at))}</strong><small>${e(s.location)}${s.booked_by?' · '+(isSupervisor()?e(studentName(s.booked_by)):'Your booking'):''}</small></div>${s.booked_by?`<button class="secondary small-button" data-action="meeting" data-id="${e(s.id)}">Details</button>`:new Date(s.starts_at)<=new Date()?badge('Past slot'):isSupervisor()?`<div class="row">${badge('Available','green')}<button class="icon-button" data-action="delete-slot" data-id="${e(s.id)}" aria-label="Remove ${e(time(s.starts_at))} slot">×</button></div>`:`<button class="primary small-button" data-action="book" data-id="${e(s.id)}">Book time</button>`}</div>`).join(''):empty('No slots on this date',isSupervisor()?'Add availability for this day.':'Try another date or ask your supervisor for availability.')}</div></section></div><section class="panel"><div class="panel-heading"><h2>${isSupervisor()?'Booked meetings':'Your meetings'}</h2></div>${data.slots.some(s=>s.booked_by)?data.slots.filter(s=>s.booked_by).sort((a,b)=>a.starts_at.localeCompare(b.starts_at)).map(meetingCard).join(''):empty('No bookings yet','Booked meetings will appear here.')}</section>`;
+}
+function settings() {
+  const account = `<section class="panel padded"><h2>Profile</h2><dl><dt>Username</dt><dd>${e(user.username)}</dd><dt>Role</dt><dd>${isSupervisor()?'Supervisor':'Student'}</dd></dl><form data-form="my-profile">${field('Full name',`<input name="full_name" value="${e(user.full_name)}" required maxlength="120" autocomplete="name">`)}<button class="primary" type="submit">Save name</button></form><p class="small muted">${isSupervisor()?'Student accounts are managed from the Students page.':'Contact your supervisor to change your username or thesis details.'}</p></section>
+    <section class="panel padded"><h2>Change password</h2><p>Choose a password only you know.</p><form data-form="my-password">${field('Current password','<input name="current_password" type="password" required autocomplete="current-password">')}${field('New password','<input name="new_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><small>12–128 characters. Use a unique password.</small>')}${field('Confirm new password','<input name="confirm_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">')}<button class="primary" type="submit">Change password</button></form><p class="small muted">${isSupervisor()?'If you forget your password, recover your account through the Supabase dashboard.':'Forgot your current password? Ask your supervisor to reset it, then sign in and choose a new one here.'}</p></section>`;
+  if (!isSupervisor()) return `<div class="settings-grid">${account}</div>`;
+  return `<div class="settings-grid">${account}<section class="panel padded"><h2>Connection</h2><p>${store.mode==='demo'?'You are using the local demo. No sample data is sent to Supabase.':'This browser is connected to your Supabase project. Private records are protected by account permissions.'}</p><button class="secondary" data-action="connection">Change connection</button>${store.mode==='live'?'<button class="text-button" data-action="copy-invite">Copy student sign-in link</button>':''}<p class="small muted">The project URL and publishable key are remembered in this browser. No database password or secret key is needed here.</p></section>${LOCAL?`<section class="panel padded"><h2>Local testing</h2><p>The demo lets you try both roles with fictional records. PDFs and notes stay in this browser and do not sync to other devices.</p><button class="secondary" data-action="switch-demo">Open demo sign-in</button>${store.mode==='demo'?'<button class="text-button danger" data-action="reset-demo">Reset sample data</button>':''}</section>`:''}${store.mode==='live'?'<section class="panel padded"><h2>Deployment check</h2><p>Check the database, private PDF storage, and student account function.</p><button class="secondary" data-action="check-setup">Check production setup</button></section>':''}<section class="panel padded"><h2>Meeting times</h2><p>All meeting dates and times use <strong>Europe/Tallinn</strong>, even if your device is set to another timezone.</p><p class="small muted">PDF limit: 20 MB. Drive links are supported when uploading is inconvenient.</p></section></div>`;
+}
+function setupDialog(checks) {
+  dialog('Production setup check', `<p class="muted">These checks use your signed-in supervisor permissions.</p><div class="setup-checks">${checks.map(c=>`<div class="setup-check"><div class="row"><strong>${e(c.label)}</strong>${badge(c.ok?'Ready':'Needs attention',c.ok?'green':'amber')}</div><p>${e(c.detail)}</p></div>`).join('')}</div><p class="small muted">For any missing step, follow PRODUCTION.md in the repository. Before inviting students, also test two separate student accounts.</p>`, true);
+}
+function connectionDialog() {
+  if (!canConfigure()) return;
+  const config=getConnection();
+  dialog('Connect your workspace',`<p class="muted">Enter the project URL and publishable key from Supabase. These are saved only in this browser.</p><form data-form="connection">${field('Project URL',`<input name="url" type="url" required placeholder="https://your-project.supabase.co" value="${e(config?.url||'')}">`)}${field('Publishable key',`<input name="key" required autocomplete="off" spellcheck="false" placeholder="sb_publishable_…" value="${e(config?.key||'')}">`)}<p class="small muted">Your supervisor must complete the Supabase setup before real accounts can sign in.</p>${actions('Save connection')}</form>${config?'<button class="text-button danger" data-action="clear-connection">Forget this browser’s connection</button>':''}`);
+}
+function newReport() {
+  dialog('Share your progress',`<form data-form="report">${field('Update title','<input name="title" required maxlength="160" placeholder="What have you been working on?">')}${field('Submission type','<select name="kind"><option value="progress">Progress update</option><option value="thesis">Thesis draft</option></select>')}${field('Progress notes','<textarea name="body" required minlength="10" maxlength="10000" rows="5" placeholder="What you completed, your next steps, and anything you need help with…"></textarea>')}${field('Attach a PDF (optional)','<input name="pdf" type="file" accept="application/pdf,.pdf"><small>PDF only · up to 20 MB</small>')}${field('Or add a sharing link (optional)','<input name="share_url" type="url" placeholder="https://…"><small>Personal or university Drive. Make sure your supervisor has permission to open it.</small>')}${actions('Submit progress')}</form>`);
+}
+function reportDialog(id) {
+  const r=data.reports.find(r=>r.id===id); if (!r) return;
+  const comments=data.comments.filter(c=>c.report_id===id).sort((a,b)=>a.created_at.localeCompare(b.created_at));
+  dialog(r.title,`<p class="muted">${e(studentName(r.student_id))} · ${e(dateText(r.created_at))}</p><div class="prose">${e(r.body)}</div><div class="document-actions">${r.file_path?`<button class="secondary" data-action="file" data-id="${e(r.id)}">▧ Open ${e(r.file_name)}</button>`:''}${safeShareURL(r.share_url)?`<a class="secondary" href="${e(safeShareURL(r.share_url))}" target="_blank" rel="noopener noreferrer">↗ Open shared document</a>`:''}</div><h3>Supervisor feedback</h3>${comments.length?comments.map(c=>`<div class="comment"><div class="row"><strong>Supervisor</strong><small>${e(dateText(c.created_at))}</small></div><p class="prose">${e(c.body)}</p></div>`).join(''):'<p class="muted">No feedback yet.</p>'}${isSupervisor()?`<form data-form="comment" data-id="${e(id)}">${field('Leave a comment','<textarea name="body" rows="3" required maxlength="10000" placeholder="Feedback, decisions, and what to focus on next…"></textarea>')}<button class="primary" type="submit">Add feedback</button></form><hr><form data-form="task" data-id="${e(r.student_id)}">${field('Assign a next step','<input name="title" required maxlength="500" placeholder="A concrete next action">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="secondary" type="submit">Add next step</button></form>`:''}`,true);
+}
+function addStudent() {
+  dialog('Create a student account',`<form data-form="student">${field('Full name','<input name="full_name" required maxlength="120" autocomplete="off">')}${field('Username','<input name="username" required pattern="[a-z0-9][a-z0-9._-]{2,31}" minlength="3" maxlength="32" autocomplete="off" placeholder="e.g. anna.s"><small>3–32 lowercase letters, numbers, dots, underscores or hyphens.</small>')}${field('Initial password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><small>At least 12 characters. Share it privately with the student.</small>')}${field('Thesis title','<textarea name="thesis_title" rows="2" maxlength="500"></textarea>')}${field('Defence date (optional)','<input name="defence_date" type="date">')}${actions('Create account')}</form>`);
+}
+function studentDialog(id) {
+  const p=data.profiles.find(p=>p.id===id); if (!p) return;
+  dialog(p.full_name,`<p class="muted">@${e(p.username)} · ${p.active?'Active':'Archived'}</p><h3>${e(p.thesis_title||'Title to be agreed')}</h3><p>${p.defence_date?'Defence: '+e(dateText(p.defence_date)):''}</p><div class="document-actions"><button class="secondary" data-action="password" data-id="${e(id)}">Reset password</button><button class="secondary ${p.active?'danger':''}" data-action="archive" data-id="${e(id)}">${p.active?'Archive account':'Restore account'}</button></div><p class="small muted">Archiving removes sign-in access and releases future bookings. Reports and feedback are retained.</p><h3>Progress history</h3>${sortedReports().filter(r=>r.student_id===id).map(reportCard).join('')||'<p class="muted">No updates yet.</p>'}<h3>Next steps</h3>${taskList(data.tasks.filter(t=>t.student_id===id))}<form data-form="task" data-id="${e(id)}">${field('New next step','<input name="title" required maxlength="500">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="primary">Assign next step</button></form>`,true);
+}
+function zonedTime(day, clock) {
+  const [y,m,d]=day.split('-').map(Number), [h,min]=clock.split(':').map(Number); const target=Date.UTC(y,m-1,d,h,min); let guess=target;
+  for (let i=0;i<3;i++) { const parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(guess)).map(p=>[p.type,p.value])); const actual=Date.UTC(+parts.year,+parts.month-1,+parts.day,+parts.hour,+parts.minute,+parts.second); guess+=target-actual; }
+  if (dateKey(new Date(guess))!==day || time(new Date(guess))!==clock) throw new Error('This time is not available because of the daylight-saving clock change.');
+  return new Date(guess).toISOString();
+}
+function availabilityDialog() {
+  dialog('Add meeting availability',`<p class="muted">Create consecutive meeting slots. Times use Europe/Tallinn.</p><form data-form="availability">${field('Date',`<input name="date" type="date" required min="${dateKey(new Date())}" value="${selectedDay}">`)}<div class="two-columns">${field('From','<input name="from" type="time" required value="14:00">')}${field('Until','<input name="until" type="time" required value="16:00">')}</div>${field('Slot length','<select name="duration"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option></select>')}${field('Location or meeting link','<input name="location" required maxlength="200" value="MS Teams">')}${actions('Publish availability')}</form>`);
+}
+function bookDialog(id) { const s=data.slots.find(s=>s.id===id); if (!s) return; dialog('Book a supervision meeting',`<p>${e(dateText(s.starts_at))} · ${e(time(s.starts_at))}–${e(time(s.ends_at))}<br><span class="muted">${e(s.location)} · Europe/Tallinn</span></p><form data-form="book" data-id="${e(id)}">${field('What would you like to discuss?','<textarea name="agenda" required maxlength="2000" rows="4" placeholder="Your progress, questions, or decisions to discuss…"></textarea>')}${actions('Confirm booking')}</form>`); }
+function meetingDialog(id) {
+  const s=data.slots.find(s=>s.id===id); if (!s) return;
+  dialog('Supervision meeting',`<p><strong>${e(dateText(s.starts_at))} · ${e(time(s.starts_at))}–${e(time(s.ends_at))}</strong><br><span class="muted">${isSupervisor()?e(studentName(s.booked_by))+' · ':''}${e(s.location)} · Europe/Tallinn</span></p><h3>Meeting agenda</h3><p class="prose">${e(s.agenda||'No agenda added.')}</p><h3>Meeting notes</h3>${isSupervisor()?`<form data-form="meeting-notes" data-id="${e(id)}">${field('Discussion, decisions, and next steps',`<textarea name="notes" rows="5" maxlength="10000">${e(s.meeting_notes)}</textarea>`)}<button class="primary">Save meeting notes</button></form>`:`<p class="prose">${e(s.meeting_notes||'Your supervisor has not added meeting notes yet.')}</p>`}${isSupervisor()||new Date(s.starts_at)>new Date()?`<button class="text-button danger" data-action="cancel" data-id="${e(id)}">Cancel booking</button>`:''}`);
+}
+
+document.addEventListener('click', async event => {
+  const button=event.target.closest('[data-action]'); if (!button) return;
+  const action=button.dataset.action, id=button.dataset.id;
+  if (action==='close') return closeDialog();
+  if (['connection','clear-connection'].includes(action) && !canConfigure()) return;
+  if (['copy-invite','switch-demo','reset-demo','check-setup'].includes(action) && !isSupervisor()) return;
+  if (action==='demo' && (!DEMO || user)) return;
+  if (action==='live' && (!DEMO || user)) return;
+  if (action==='connection') return connectionDialog();
+  if (!LOCAL && ['demo','switch-demo','reset-demo'].includes(action)) return;
+  if (action==='view') { view=button.dataset.view; return render(); }
+  if (action==='day') { selectedDay=button.dataset.day; return render(); }
+  if (action==='month') { const [y,m]=month.split('-').map(Number); month=new Date(Date.UTC(y,m-1+Number(button.dataset.offset),1)).toISOString().slice(0,7); return render(); }
+  if (action==='new-report') return newReport();
+  if (action==='report') { if (modal.open) closeDialog(); return reportDialog(id); }
+  if (action==='student') return studentDialog(id);
+  if (action==='add-student') return addStudent();
+  if (action==='availability') return availabilityDialog();
+  if (action==='book') return bookDialog(id);
+  if (action==='meeting') return meetingDialog(id);
+  if (action==='password') { closeDialog(); return dialog('Reset student password',`<form data-form="password" data-id="${e(id)}">${field('New password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">')}${actions('Reset password')}</form>`); }
+  await busy(button, async()=>{
+    if (action==='live') { await store?.logout(); store?.dispose(); location.assign(location.pathname + (getConnection()?'':'?setup=1')); return; }
+    if (action==='check-setup' && isSupervisor() && store.mode==='live') setupDialog(await store.checkSetup());
+    if (action==='demo') { store?.dispose(); store=new DemoStore(); localStorage.setItem('thesis.mode.v1','demo'); user=await store.login(button.dataset.role==='supervisor'?'ali':'alex','demo-thesis-2026'); view='overview'; await refresh(); }
+    if (action==='logout') { await store.logout(); user=null; render(); }
+    if (action==='copy-invite' && store.mode==='live') { await navigator.clipboard.writeText(createSignInLink(getConnection())); toast('Student sign-in link copied. Share it privately with their username and password.'); }
+    if (action==='refresh') { await refresh(); toast('Workspace refreshed.'); }
+    if (action==='archive') { const p=data.profiles.find(p=>p.id===id); if (!confirm(`${p.active?'Archive':'Restore'} ${p.full_name}? ${p.active?'Their reports will be retained.':''}`)) return; const result=await store.account(p.active?'archive':'restore',{student_id:id}); closeDialog(); await refresh(); toast(result?.warning||'Account updated.',Boolean(result?.warning)); }
+    if (action==='delete-slot') { if (!confirm('Remove this available meeting slot?')) return; await store.deleteSlot(id); await refresh(); toast('Slot removed.'); }
+    if (action==='cancel') { if (!confirm('Cancel this booking and make the slot available again?')) return; await store.cancel(id); closeDialog(); await refresh(); toast('Booking cancelled.'); }
+    if (action==='file') { const win=window.open('about:blank','_blank'); if (win) win.opener=null; try { const url=await store.fileURL(data.reports.find(r=>r.id===id)); if (win) win.location.replace(url); else toast('Allow pop-ups to open the PDF.',true); if(url.startsWith('blob:'))setTimeout(()=>URL.revokeObjectURL(url),300000); } catch(err) { win?.close(); throw err; } }
+    if (action==='switch-demo') { await store.logout(); store.dispose(); location.assign(location.pathname+'?demo=1'); return; }
+    if (action==='clear-connection') { await store?.logout(); store?.dispose(); clearConnection(); localStorage.removeItem('thesis.mode.v1'); store=null; user=null; closeDialog(); render(); }
+    if (action==='reset-demo') { if (!confirm('Delete this browser’s demo records and files and restore the samples?')) return; await store.logout(); localStorage.removeItem('thesis.demo.v1'); await new Promise((resolve,reject)=>{const r=indexedDB.deleteDatabase('thesis-demo-files');r.onsuccess=resolve;r.onerror=()=>reject(r.error);}); user=null; await store.init(); render(); toast('Demo reset.'); }
+  });
+});
+document.addEventListener('submit', event => {
+  const form=event.target.closest('[data-form]'); if (!form) return; event.preventDefault();
+  const values=Object.fromEntries(new FormData(form));
+  busy(form.querySelector('[type="submit"],button:not([type])'),async()=>{
+    const type=form.dataset.form;
+    if (type==='login') { user=await store.login(values.username,values.password); view='overview'; try { await refresh(); } catch(err) { user=null; await store.logout(); render(); throw err; } return; }
+    if (type==='connection') { if (!canConfigure()) return; setConnection(values.url,values.key); await store?.logout(); store?.dispose(); store=new SupabaseStore(getConnection()); localStorage.setItem('thesis.mode.v1','live'); user=null; closeDialog(); location.assign(location.pathname); return; }
+    if (type==='my-profile') { await store.updateMyProfile(values.full_name); await refresh(); toast('Your name has been updated.'); return; }
+    if (type==='my-password') { await store.changeMyPassword(values.current_password,values.new_password,values.confirm_password); form.reset(); toast('Password changed. Use your new password next time you sign in.'); return; }
+    if (type==='student') { await store.account('create',{...values,username:values.username.trim().toLowerCase()}); toast('Student account created. Share the login privately.'); }
+    if (type==='password') { await store.account('password',{student_id:form.dataset.id,password:values.password}); toast('Password reset.'); }
+    if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
+    if (type==='comment') { await store.comment(form.dataset.id,values.body.trim()); const id=form.dataset.id; closeDialog(); await refresh(); reportDialog(id); toast('Feedback added.'); return; }
+    if (type==='task') { await store.task(form.dataset.id,values.title.trim(),values.due_date); toast('Next step added.'); }
+    if (type==='book') { await store.book(form.dataset.id,values.agenda.trim()); toast('Meeting booked.'); }
+    if (type==='meeting-notes') { await store.meetingNotes(form.dataset.id,values.notes.trim()); toast('Meeting notes saved.'); }
+    if (type==='availability') {
+      const start=new Date(zonedTime(values.date,values.from)), end=new Date(zonedTime(values.date,values.until)), step=Number(values.duration)*60000;
+      if (start<=new Date() || end<=start || +end-+start>8*3600000) throw new Error('Choose a future time range of up to eight hours, with the end after the start.');
+      if ((+end-+start)%step) throw new Error('The time range must fit whole meeting slots.');
+      const slots=[];for(let t=+start;t<+end;t+=step)slots.push({starts_at:new Date(t).toISOString(),ends_at:new Date(t+step).toISOString(),location:values.location.trim()});
+      await store.createSlots(slots); selectedDay=values.date; month=values.date.slice(0,7); toast(`${slots.length} meeting slots published.`);
+    }
+    closeDialog(); await refresh();
+  });
+});
+document.addEventListener('change', event=>{
+  if (event.target.id==='show-archived') { showArchived=event.target.checked; render(); }
+  if (event.target.dataset.task) { const input=event.target, checked=input.checked; busy(null,async()=>{try { await store.completeTask(input.dataset.task,checked); await refresh(); if(modal.open)closeDialog(); } catch(err) { input.checked=!checked; throw err; }}); }
+  if (event.target.name==='pdf') validatePDF(event.target.files[0]).catch(err=>{event.target.value='';toast(err.message,true);});
+});
+document.addEventListener('input', event=>{
+  if(event.target.id==='student-search'){studentFilter=event.target.value;const pos=event.target.selectionStart;render();const input=document.querySelector('#student-search');input.focus();if(input.type==='text')input.setSelectionRange(pos,pos);}
+});
+modal.addEventListener('click', event=>{if(event.target===modal&&event.clientX<modal.getBoundingClientRect().left)closeDialog();});
+
+async function start() {
+  if (!LOCAL && location.protocol==='http:') { location.replace('https:'+location.href.slice(5)); return; }
+  try {
+    const invitation=new URLSearchParams(location.hash.slice(1));
+    if (invitation.has('url') && invitation.has('key')) { setConnection(invitation.get('url'),invitation.get('key')); localStorage.setItem('thesis.mode.v1','live'); history.replaceState(null,'',location.pathname+location.search); }
+    const config=getConnection();
+    if(DEMO && !invitation.has('url'))store=new DemoStore();else if(config) { store=new SupabaseStore(config); localStorage.setItem('thesis.mode.v1','live'); } else localStorage.removeItem('thesis.mode.v1');
+    if(store)user=await store.currentUser();
+    if(user)await refresh();else render();
+  } catch(err) { user=null;render();toast(err.message,true); }
+}
+start();
