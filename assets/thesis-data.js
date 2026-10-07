@@ -113,6 +113,22 @@ export class SupabaseStore {
     if (error?.code === 'PGRST202') throw new Error('Name changes need the account update. Ask your supervisor to run supabase/account-update.sql.');
     fail(error);
   }
+  async updateMyThesis(title) {
+    const value = title.trim();
+    if (!value || value.length > 500) throw new Error('Use a thesis title of 1–500 characters.');
+    const { error } = await this.client.rpc('thesis_update_my_thesis', { new_title: value });
+    if (error?.code === 'PGRST202') throw new Error('Thesis editing needs the workspace update. Ask your supervisor to run workspace-update.sql.');
+    fail(error);
+  }
+  async updateMyContact(email) {
+    const { error } = await this.client.rpc('thesis_update_my_contact', { new_email: email.trim() }); fail(error);
+  }
+  async dismissReport(report_id, dismissed) {
+    const { error } = await this.client.rpc('thesis_dismiss_report', { report_id, dismissed });
+    if (error?.code === 'PGRST202') throw new Error('Dismissing updates needs the workspace update. Run workspace-update.sql in Supabase.');
+    fail(error);
+  }
+  async dismissAllReports() { const { error } = await this.client.rpc('thesis_dismiss_all_reports'); fail(error); }
   async changeMyPassword(current, password, confirmation) {
     passwordChange(current, password, confirmation);
     if (this.backend) return this.backend.changePassword(current, password);
@@ -139,6 +155,14 @@ export class SupabaseStore {
     if (error) {
       let detail; try { detail = await error.context?.json(); } catch { /* preserve useful error below */ }
       throw new Error(detail?.error || 'Account management is unavailable. Deploy thesis-accounts in Supabase Edge Functions, then retry. See PRODUCTION.md, step 3.');
+    }
+    if (data?.error) throw new Error(data.error); return data;
+  }
+  async automation(action, values = {}) {
+    const { data, error } = await this.client.functions.invoke('thesis-automation', { body: { action, ...values } });
+    if (error) {
+      let detail; try { detail = await error.context?.json(); } catch { /* Fall back to the deployment hint. */ }
+      throw new Error(detail?.error || 'Microsoft 365 is not connected. Follow the local automation setup guide and deploy thesis-automation.');
     }
     if (data?.error) throw new Error(data.error); return data;
   }
@@ -251,6 +275,27 @@ export class DemoStore {
     if (await passwordHash(current, p.salt) !== p.password_hash) throw new Error('Your current password is incorrect.');
     p.salt = uuid(); p.password_hash = await passwordHash(password, p.salt); this.write(d); this.user = p;
   }
+  async updateMyThesis(title) {
+    const d = this.read(), p = d.profiles.find(p => p.id === this.user?.id && p.active && p.role === 'student');
+    if (!p) throw new Error('An active student account is required.');
+    if (!title.trim() || title.trim().length > 500) throw new Error('Use a thesis title of 1–500 characters.');
+    p.thesis_title = title.trim(); this.write(d); this.user = p;
+  }
+  async updateMyContact(email) {
+    const d = this.read(), p = d.profiles.find(p => p.id === this.user?.id && p.active);
+    if (!p) throw new Error('An active account is required.');
+    p.contact_email = email.trim().toLowerCase() || null; this.write(d); this.user = p;
+  }
+  async dismissReport(id, dismissed) {
+    this.requireSupervisor(); const d = this.read(), r = d.reports.find(r => r.id === id);
+    if (!r) throw new Error('Progress update not found.');
+    Object.assign(r, { dismissed_at: dismissed ? now() : null, dismissed_by: dismissed ? this.user.id : null }); this.write(d);
+  }
+  async dismissAllReports() {
+    this.requireSupervisor(); const d = this.read();
+    for (const r of d.reports) if (!r.dismissed_at) Object.assign(r, { dismissed_at: now(), dismissed_by: this.user.id });
+    this.write(d);
+  }
   async load() {
     const data = this.read(); if (this.user.role === 'supervisor') return data;
     const reports = data.reports.filter(r => r.student_id === this.user.id);
@@ -274,6 +319,17 @@ export class DemoStore {
     }
     this.write(d);
   }
+  async automation(action, values = {}) {
+    this.requireSupervisor();
+    if (action === 'request_teams') {
+      const d = this.read(), slot = d.slots.find(s => s.id === values.slot_id);
+      const student = d.profiles.find(p => p.id === slot?.booked_by && p.active);
+      if (!slot || !student || new Date(slot.starts_at) <= new Date()) throw new Error('Choose an upcoming booked meeting.');
+      if (!student.contact_email) throw new Error('Ask the student to add a meeting email in Account first.');
+      slot.teams_requested_at ||= now(); slot.teams_dispatch_state = 'accepted'; this.write(d);
+    }
+    return { ok: true, configured: true, demo: true, counts: { pending: 0, processing: 0, error: 0, accepted: 0 } };
+  }
   async submitReport(v, file) {
     if (this.user.role !== 'student') throw new Error('Student account required.'); await validatePDF(file);
     const d = this.read(); const id = uuid(); const path = `${this.user.id}/${id}.pdf`;
@@ -290,8 +346,8 @@ export class DemoStore {
     if (slots.some(n => d.slots.some(s => n.starts_at < s.ends_at && n.ends_at > s.starts_at))) throw new Error('These times overlap an existing slot.');
     d.slots.push(...slots.map(s => ({ ...s, id: uuid(), booked_by: null, agenda: '', meeting_notes: '' }))); this.write(d);
   }
-  async book(id, agenda) { const d = this.read(); const slot = d.slots.find(s => s.id === id); if (this.user.role !== 'student' || !slot || slot.booked_by || new Date(slot.starts_at) <= new Date()) throw new Error('This slot is no longer available.'); Object.assign(slot, { booked_by: this.user.id, agenda }); this.write(d); }
-  async cancel(id) { const d = this.read(); const s = d.slots.find(s => s.id === id); if (!s || !s.booked_by || (this.user.role !== 'supervisor' && (s.booked_by !== this.user.id || new Date(s.starts_at) <= new Date()))) throw new Error('This meeting cannot be cancelled.'); Object.assign(s, { booked_by: null, agenda: '', meeting_notes: '' }); this.write(d); }
+  async book(id, agenda) { const d = this.read(); const slot = d.slots.find(s => s.id === id); if (this.user.role !== 'student' || !slot || slot.booked_by || new Date(slot.starts_at) <= new Date()) throw new Error('This slot is no longer available.'); Object.assign(slot, { booked_by: this.user.id, agenda, booking_id: uuid(), teams_requested_at: null, teams_dispatch_state: null }); this.write(d); }
+  async cancel(id) { const d = this.read(); const s = d.slots.find(s => s.id === id); if (!s || !s.booked_by || (this.user.role !== 'supervisor' && (s.booked_by !== this.user.id || new Date(s.starts_at) <= new Date()))) throw new Error('This meeting cannot be cancelled.'); Object.assign(s, { booked_by: null, agenda: '', meeting_notes: '', booking_id: null, teams_requested_at: null, teams_dispatch_state: null }); this.write(d); }
   async meetingNotes(id, notes) { this.requireSupervisor(); const d = this.read(); const s = d.slots.find(s => s.id === id); s.meeting_notes = notes; this.write(d); }
   async deleteSlot(id) { this.requireSupervisor(); const d = this.read(); const s = d.slots.find(s => s.id === id); if (s?.booked_by) throw new Error('Cancel the booking first.'); d.slots = d.slots.filter(s => s.id !== id); this.write(d); }
   dispose() {}

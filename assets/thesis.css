@@ -11,3 +11,6 @@ input:not([type=checkbox]),select,textarea{border:1px solid #dce1e8;border-radiu
 .thesis-card h2,.prose,.title-cell,.comment p,.slot small,.meeting-card small{overflow-wrap:anywhere}
 .live-notice{background:#e9f5ef;color:var(--green)}.real-switch{margin-top:12px}.setup-checks{display:grid;gap:12px}.setup-check{border:1px solid var(--line);padding:14px;border-radius:8px}.setup-check p{margin:7px 0 0;font-size:12px;color:var(--muted)}
 .settings-grid form+p,.login-card form+p{margin-top:14px}.settings-grid dd{overflow-wrap:anywhere}
+.overview-report{border-bottom:1px solid var(--line)}.overview-report>.report-card{border-bottom:0}.overview-report>.text-button{display:block;margin:0 23px 12px auto}.overview-report:last-child{border-bottom:0}
+
+.notice.green{background:#e9f5ef;color:var(--green)}
