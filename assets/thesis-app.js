@@ -48,7 +48,9 @@ const empty = (title, text) => `<div class="empty"><span class="empty-icon">◇<
 const badge = (text, type = '') => `<span class="badge ${type}">${e(text)}</span>`;
 function toast(message, error = false) {
   const el = document.querySelector('#toast'); el.textContent = message; el.className = `toast ${error ? 'error' : ''}`; el.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, error ? 12000 : 4500);
+  // An open dialog sits in the browser's top layer; reopening the popover puts the message above it.
+  if (el.showPopover) { if (el.matches(':popover-open')) el.hidePopover(); el.showPopover(); }
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { if (el.hidePopover && el.matches(':popover-open')) el.hidePopover(); el.hidden = true; }, error ? 12000 : 4500);
 }
 function dialog(title, html, wide = false) {
   modal.className = wide ? 'wide' : ''; modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${e(title)}</h2><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>${html}`;
@@ -205,7 +207,7 @@ async function pdfDialog(id, compare = false) {
   modal.classList.add('pdf-dialog');
   const root = modal.querySelector('#pdf-workspace');
   try {
-    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-09-pdf');
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-10-compare');
     if (!root.isConnected || !modal.open) return;
     pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports }) : openReview(root, {
       store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),

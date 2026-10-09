@@ -256,9 +256,30 @@ dialog.pdf-dialog { width: 1200px; }
 .diff-old { background: #fff1f2; color: #881337; }
 .diff-new { background: #ecfdf5; color: #065f46; }
 .diff-columns p { white-space: pre-wrap; margin-bottom: 0; }
-.diff-columns ins, .diff-columns del { text-decoration: none; }
+.diff-columns del { background: #fecaca; color: #7f1d1d; text-decoration: line-through; text-decoration-thickness: 2px; padding: 1px 3px; border-radius: 3px; }
+.diff-columns ins { background: #bbf7d0; color: #14532d; text-decoration: none; font-weight: 600; padding: 1px 3px; border-radius: 3px; }
+.diff-count-added { color: #15803d; font-weight: 600; }
+.diff-count-removed { color: #b91c1c; font-weight: 600; }
+.diff-passage.active { border-color: #0f766e; box-shadow: 0 0 0 2px #0f766e33; }
+.diff-passage h3 .text-button { font-size: inherit; font-weight: 700; }
+.diff-nav { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; margin: 16px 0; scroll-margin-top: 12px; }
+.diff-panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.diff-pane { min-width: 0; border-radius: 10px; border-top: 5px solid; background: #e2e8ee; }
+.diff-pane-old { border-color: #dc2626; }
+.diff-pane-new { border-color: #16a34a; }
+.diff-pane-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px; }
+.diff-pane-title { min-width: 0; overflow-wrap: anywhere; }
+.diff-pane-pages { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.diff-pane-pages button { padding: 6px 12px; }
+.diff-scroll { overflow: auto; max-height: 72dvh; padding: 0 8px 8px; }
+.pdf-sheet .diff-overlay { cursor: default; pointer-events: none; }
+.diff-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: var(--muted); }
+.diff-key { display: inline-block; width: 18px; height: 12px; border-radius: 3px; }
+.diff-key.removed { background: #dc262666; outline: 2px solid #b91c1c; }
+.diff-key.added { background: #16a34a66; outline: 2px solid #15803d; margin-left: 10px; }
 @media (max-width: 900px) {
-  .pdf-review-layout, .diff-columns { grid-template-columns: minmax(0, 1fr); }
+  .pdf-review-layout, .diff-columns, .diff-panes { grid-template-columns: minmax(0, 1fr); }
+  .diff-scroll { max-height: 60dvh; }
   .pdf-toolbar { gap: 6px; }
   .pdf-toolbar button { font-size: 15px; padding: 10px; }
 }
@@ -276,7 +297,8 @@ dialog h3 { margin: 24px 0 14px; }
 .comment small { font-size: 14px; color: var(--muted); }
 .comment p { font-size: 16px; margin: 10px 0 0; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 26px 0; }
-.toast { position: fixed; bottom: 24px; right: 24px; z-index: 30; max-width: min(500px, calc(100vw - 32px)); background: #164c41; color: white; padding: 16px 20px; border-radius: 10px; font-size: 16px; line-height: 1.55; box-shadow: 0 6px 25px #0002; overflow-wrap: anywhere; }
+/* The toast is a popover so it can sit above an open dialog; reset the browser's popover box. */
+.toast { position: fixed; top: auto; left: auto; bottom: 24px; right: 24px; margin: 0; border: 0; overflow: visible; z-index: 30; max-width: min(500px, calc(100vw - 32px)); background: #164c41; color: white; padding: 16px 20px; border-radius: 10px; font-size: 16px; line-height: 1.55; box-shadow: 0 6px 25px #0002; overflow-wrap: anywhere; }
 .toast.error { background: #912d3b; }
 .thesis-card h2, .title-cell, .comment p, .slot small, .meeting-card small { overflow-wrap: anywhere; }
 .setup-checks { display: grid; gap: 14px; }
