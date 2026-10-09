@@ -30,7 +30,17 @@ const sortedReports = () => [...data.reports].sort((a, b) => b.created_at.locale
 const futureMeetings = () => data.slots.filter(s => s.booked_by && new Date(s.starts_at) > new Date()).sort((a, b) => a.starts_at.localeCompare(b.starts_at));
 const openTasks = () => data.tasks.filter(t => !t.completed);
 const hasFeedback = r => data.comments.some(c => c.report_id === r.id);
-const icons = { overview: '◫', students: '◎', meetings: '▦', progress: '▤', settings: '⚙' };
+const icons = {
+  overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  students: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M15 3.13a4 4 0 0 1 0 7.75"/><circle cx="9" cy="7" r="4"/>',
+  meetings: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18m-13 5h2m4 0h2"/>',
+  progress: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"/>',
+  settings: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v2"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/>',
+  refresh: '<path d="M20 7v5h-5M4 17v-5h5m-5-3a8 8 0 0 1 13.6-5.6L20 6M4 18l2.4 2.6A8 8 0 0 0 20 15"/>'
+};
+// Intrinsic dimensions also keep icons small if an older stylesheet is cached.
+const icon = key => `<svg class="ui-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${icons[key]}</svg>`;
 const safeShareURL = value => { try { return httpsURL(value); } catch { return null; } };
 const empty = (title, text) => `<div class="empty"><span class="empty-icon">◇</span><h3>${e(title)}</h3><p>${e(text)}</p></div>`;
 const badge = (text, type = '') => `<span class="badge ${type}">${e(text)}</span>`;
@@ -47,10 +57,10 @@ function field(label, html, extra = '') { return `<label class="field ${extra}">
 function actions(label) { return `<div class="form-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit">${e(label)}</button></div>`; }
 async function busy(button, fn) {
   if (loading) return; loading = true;
-  const old = button?.textContent, wasDisabled = button?.disabled;
+  const originalChildren = button ? [...button.childNodes] : [], wasDisabled = button?.disabled;
   if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = 'Working…'; }
   try { await fn(); } catch (err) { toast(err.message || 'Something went wrong. Please try again.', true); }
-  finally { loading = false; if (button?.isConnected) { button.disabled = wasDisabled; button.removeAttribute('aria-busy'); button.textContent = old; } }
+  finally { loading = false; if (button?.isConnected) { button.disabled = wasDisabled; button.removeAttribute('aria-busy'); button.replaceChildren(...originalChildren); } }
 }
 async function refresh() {
   data = await store.load();
@@ -60,42 +70,36 @@ async function refresh() {
   render();
 }
 function renderLogin() {
-  const live = store?.mode === 'live';
-  app.innerHTML = `<main class="login-layout">
-    <section class="login-intro"><a class="brand" href="index.html"><span class="brand-mark">A</span><span>Ali Ghasempour<small>THESIS WORKSPACE</small></span></a>
-      <div><span class="eyebrow">A CLEARER WAY TO WORK TOGETHER</span><h1>Keep the next<br>step in sight.</h1><p>One place for your thesis progress, meeting plans, and feedback. Less searching. More moving forward.</p>
-      <div class="intro-features"><span>01 &nbsp; Share your progress</span><span>02 &nbsp; Plan your next meeting</span><span>03 &nbsp; Keep feedback together</span></div></div><p class="intro-footer">Tallinn University of Technology · IT College</p></section>
-    <section class="login-content"><div class="login-card"><span class="eyebrow">WELCOME BACK</span><h2>Your thesis starts here.</h2><p>Sign in with the account your supervisor created.</p>
-      ${store?.mode === 'demo' ? '<div class="notice">Local demo · Fictional accounts for testing.</div>' : !store ? '<div class="notice" id="connection-help">This browser is not connected yet. Open the workspace sign-in link your supervisor sent you, then enter your username and password.</div>' : ''}
-      <form data-form="login">${field('Username', '<input name="username" autocomplete="username" required maxlength="32" placeholder="Your username">')}
-      ${field('Password', '<input name="password" type="password" autocomplete="current-password" required placeholder="Your password">')}
-      <button class="primary full" type="submit" ${!store ? 'disabled aria-describedby="connection-help"' : ''}>${store ? 'Sign in' : 'Sign-in link needed'}</button></form>
-      ${live ? `<p class="small muted">${store.backend ? 'Your sign-in survives page refreshes. Sign out when you finish on a shared device.' : 'For privacy, you’ll need to sign in again after refreshing or closing this page.'}</p>` : ''}
-      <p class="small muted">Forgot your password? Ask your supervisor for a reset.</p>
-      ${DEMO ? '<div class="divider"><span>Local testing</span></div><div class="demo-buttons"><button class="secondary" data-action="demo" data-role="supervisor">Supervisor demo</button><button class="secondary" data-action="demo" data-role="student">Student demo</button></div><p class="small muted">Demo logins: <strong>ali</strong> or <strong>alex</strong><br>Password: <code>demo-thesis-2026</code></p><button class="secondary full real-switch" data-action="live">Use real workspace →</button>' : ''}
-      ${SETUP ? `<button class="text-button" data-action="connection">${live ? 'Change Supabase connection' : 'Connect your Supabase project'} →</button>` : ''}
-      <a class="back-home" href="index.html">← Back to personal website</a>
-    </div></section></main>`;
+  app.innerHTML = `<main class="login-layout"><div class="login-card">
+    <form data-form="login" aria-label="Sign in">
+      ${field('Username', '<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="32">')}
+      ${field('Password', '<input name="password" type="password" autocomplete="current-password" required>')}
+      <button class="primary full" type="submit" ${!store ? 'disabled' : ''}>Sign in</button>
+    </form>
+    <p class="login-help">Forgot your password? Ask your supervisor for a reset.</p>
+  </div></main>`;
 }
 function render() {
   if (!user) return renderLogin();
   const supervisor = isSupervisor();
-  const nav = supervisor ? [['overview','Overview'],['students','Students'],['meetings','Meetings'],['progress','Progress & files'],['settings','Settings']] : [['overview','My overview'],['progress','My progress'],['meetings','Book a meeting'],['settings','Account']];
-  const titles = { overview: ['A little clarity, every week.', supervisor ? 'Your supervision at a glance.' : 'Your progress and next steps, in one place.'], students: ['Your students', 'Keep each thesis and its next step in view.'], meetings: ['Make time for progress', 'Publish availability, book a time, and keep the discussion together.'], progress: ['Progress & feedback', supervisor ? 'Read the latest updates and leave clear next steps.' : 'Share your work and revisit your supervisor’s feedback.'], settings: supervisor ? ['Workspace settings', 'Manage your account and workspace.'] : ['Your account', 'Update your thesis, contact details and password.'] };
+  const nav = supervisor ? [['overview','Overview'],['students','Students'],['meetings','Meetings'],['progress','Progress'],['settings','Settings']] : [['overview','Overview'],['progress','Progress'],['meetings','Meetings'],['settings','Account']];
+  const currentLabel = nav.find(([key])=>key===view)?.[1];
+  const title = view==='settings' ? (supervisor?'Workspace settings':'Your account') : currentLabel;
+  const pageActions = view==='students'?'<button class="secondary" data-action="import-students">Import students</button><button class="primary" data-action="add-student">+ Add student</button>':view==='progress'&&!supervisor?'<button class="primary" data-action="new-report">+ Share progress</button>':view==='meetings'&&supervisor?'<button class="primary" data-action="availability">+ Add availability</button>':'';
   app.innerHTML = `<div class="workspace"><aside class="sidebar"><a class="brand" href="index.html"><span class="brand-mark">A</span><span>Thesis workspace<small>ALI GHASEMPOUR</small></span></a>
-    <div class="sidebar-label">${supervisor ? 'SUPERVISION' : 'MY THESIS'}</div><nav aria-label="Workspace">${nav.map(([key,label]) => `<button class="nav-item ${view===key?'active':''}" data-action="view" data-view="${key}" ${view===key?'aria-current="page"':''}><span aria-hidden="true">${icons[key]}</span>${label}${key==='progress' && supervisor && data.reports.some(r=>!r.dismissed_at&&!hasFeedback(r)) ? '<i class="nav-dot"></i>' : ''}</button>`).join('')}</nav>
-    <div class="sidebar-bottom"><a href="index.html">← Personal website</a><div class="user-card"><span class="avatar">${e(initials(user.full_name))}</span><div><strong>${e(user.full_name)}</strong><small>${supervisor?'Supervisor':'Student'}</small></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">↗</button></div></div></aside>
-    <main class="main"><header class="topbar"><span>${supervisor?'Supervisor workspace':'Student workspace'}</span><div>${badge(store.mode==='demo'?'Local demo':supervisor?'Supabase connected':'Signed in',store.mode==='demo'?'amber':'green')}<button class="icon-button" data-action="refresh" aria-label="Refresh workspace">↻</button></div></header>
+    <div class="sidebar-label">${supervisor ? 'SUPERVISION' : 'MY THESIS'}</div><nav class="${supervisor?'nav-supervisor':'nav-student'}" aria-label="Workspace">${nav.map(([key,label]) => `<button class="nav-item ${view===key?'active':''}" data-action="view" data-view="${key}" ${view===key?'aria-current="page"':''}>${icon(key)}<span class="nav-label">${label}</span>${key==='progress' && supervisor && data.reports.some(r=>!r.dismissed_at&&!hasFeedback(r)) ? '<i class="nav-dot" aria-hidden="true"></i>' : ''}</button>`).join('')}</nav>
+    <div class="sidebar-bottom"><a href="index.html">← Personal website</a><div class="user-card"><span class="avatar">${e(initials(user.full_name))}</span><div><strong>${e(user.full_name)}</strong><small>${supervisor?'Supervisor':'Student'}</small></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></div></aside>
+    <main class="main"><header class="topbar"><strong>${e(currentLabel)}</strong><div>${badge(store.mode==='demo'?'Local demo':'Signed in',store.mode==='demo'?'amber':'green')}<button class="icon-button" data-action="refresh" aria-label="Refresh workspace">${icon('refresh')}</button></div></header>
     ${store.mode==='demo'?'<div class="demo-banner">LOCAL DEMO · Fictional sample records, stored only in this browser.</div>':''}
-    <div class="page"><div class="page-heading"><div><span class="eyebrow">${e(dateText(new Date().toISOString()))}</span><h1>${titles[view][0]}</h1><p>${titles[view][1]}</p></div>${view==='students'?'<div class="document-actions"><button class="secondary" data-action="import-students">Import students</button><button class="primary" data-action="add-student">+ Add student</button></div>':view==='progress'&&!supervisor?'<button class="primary" data-action="new-report">+ Share progress</button>':view==='meetings'&&supervisor?'<button class="primary" data-action="availability">+ Add availability</button>':''}</div>
+    <div class="page"><h1 class="sr-only page-title" tabindex="-1">${e(title)}</h1>${pageActions?`<div class="page-actions">${pageActions}</div>`:''}
     ${view==='overview'?overview():view==='students'?students():view==='progress'?progress():view==='meetings'?meetings():settings()}</div></main></div>`;
 }
-function metric(label,value,note,tone='') { return `<div class="metric ${tone}"><span>${label}</span><strong>${value}</strong><small>${note}</small></div>`; }
+function metric(label,value,tone='') { return `<div class="metric ${tone}"><span>${label}</span><strong>${value}</strong></div>`; }
 function overview() {
   const supervisor = isSupervisor();
   const upcoming = futureMeetings(); const reports = sortedReports();
   const latest = supervisor ? reports.filter(r=>!r.dismissed_at) : reports;
-  return `<div class="metrics">${metric(supervisor?'Active students':'Progress updates',supervisor?data.profiles.filter(p=>p.role==='student'&&p.active).length:reports.length,supervisor?'Theses in progress':'A record of your work')}${metric('Upcoming meetings',upcoming.length,'Time set aside to talk')}${metric(supervisor?'Awaiting feedback':'Open next steps',supervisor?reports.filter(r=>!r.dismissed_at&&!hasFeedback(r)).length:openTasks().length,supervisor?'Updates to review':'Keep the work moving','accent')}${metric('Shared documents',reports.filter(r=>r.file_path||r.share_url).length,'PDFs and sharing links')}</div>
+  return `<div class="metrics">${metric(supervisor?'Active students':'Progress updates',supervisor?data.profiles.filter(p=>p.role==='student'&&p.active).length:reports.length)}${metric('Upcoming meetings',upcoming.length)}${metric(supervisor?'Awaiting feedback':'Open next steps',supervisor?reports.filter(r=>!r.dismissed_at&&!hasFeedback(r)).length:openTasks().length,'accent')}${metric('Shared documents',reports.filter(r=>r.file_path||r.share_url).length)}</div>
     ${!supervisor?`<section class="thesis-card"><div><span class="eyebrow">YOUR THESIS</span><h2>${e(user.thesis_title || 'Your thesis title will appear here')}</h2><p>${user.defence_date?'Expected defence: '+e(defenceText(user.defence_date)):'Defence month to be agreed with your supervisor'}</p></div><button class="primary" data-action="new-report">Share progress →</button></section>`:''}
     <div class="overview-grid"><section class="panel"><div class="panel-heading"><h2>Latest progress</h2><div class="row">${supervisor&&latest.length?'<button class="text-button" data-action="dismiss-all" title="Keep the progress history and clear these updates from the overview">Dismiss all</button>':''}<button class="text-button" data-action="view" data-view="progress">View all →</button></div></div>${latest.length?latest.slice(0,4).map(r=>supervisor?`<div class="overview-report">${reportCard(r)}<button class="text-button" data-action="dismiss-report" data-id="${e(r.id)}" aria-label="Dismiss ${e(r.title)} from overview">Dismiss from overview</button></div>`:reportCard(r)).join(''):empty('All caught up',supervisor?'New progress updates will appear here. Dismissed updates stay in Progress & files.':'Progress updates will appear here when you share your work.')}</section>
     <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2></div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
@@ -108,12 +112,15 @@ function taskList(tasks) {
   return `<div class="tasks">${tasks.map(t => `<label class="task"><input type="checkbox" data-task="${e(t.id)}" ${t.completed?'checked':''}><span><strong class="${t.completed?'done':''}">${e(t.title)}</strong><small>${isSupervisor()?e(studentName(t.student_id))+' · ':''}${t.due_date?'Due '+e(dateText(t.due_date)):'No deadline set'}</small></span></label>`).join('')}</div>`;
 }
 function students() {
+  return `<section class="panel"><div class="toolbar"><input id="student-search" type="search" aria-label="Search students" placeholder="Search names or thesis titles…" value="${e(studentFilter)}"><label class="check"><input type="checkbox" id="show-archived" ${showArchived?'checked':''}> Include archived</label></div><div id="student-results">${studentResults()}</div></section>`;
+}
+function studentResults() {
   const list = data.profiles.filter(p=>p.role==='student'&&(showArchived||p.active)&&`${p.full_name} ${p.username} ${p.thesis_title}`.toLowerCase().includes(studentFilter.toLowerCase()));
-  return `<section class="panel"><div class="toolbar"><input id="student-search" type="search" aria-label="Search students" placeholder="Search names or thesis titles…" value="${e(studentFilter)}"><label class="check"><input type="checkbox" id="show-archived" ${showArchived?'checked':''}> Include archived</label></div><div class="table-wrap"><table><thead><tr><th>Student</th><th>Thesis</th><th>Expected defence</th><th>Latest progress</th><th></th></tr></thead><tbody>${list.map(p=>{const latest=sortedReports().find(r=>r.student_id===p.id); return `<tr><td><div class="person"><span class="avatar soft">${e(initials(p.full_name))}</span><div><strong>${e(p.full_name)}</strong><small>@${e(p.username)} ${!p.active?'· Archived':''}</small></div></div></td><td class="title-cell">${e(p.thesis_title||'Title to be agreed')}</td><td>${p.defence_date?e(defenceText(p.defence_date)):'—'}</td><td>${latest?e(dateText(latest.created_at)):'No updates yet'}</td><td><button class="secondary small-button" data-action="student" data-id="${e(p.id)}">Open →</button></td></tr>`;}).join('')}</tbody></table></div>${list.length?'':empty('No students found','Add a student or change your search.')}</section>`;
+  return `<div class="table-wrap"><table class="student-table"><caption class="sr-only">Student accounts</caption><thead><tr><th scope="col">Student</th><th scope="col">Thesis</th><th scope="col">Expected defence</th><th scope="col">Latest progress</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${list.map(p=>{const latest=sortedReports().find(r=>r.student_id===p.id); return `<tr><td><div class="person"><span class="avatar soft">${e(initials(p.full_name))}</span><div><strong>${e(p.full_name)}</strong><small>@${e(p.username)} ${!p.active?'· Archived':''}</small></div></div></td><td class="title-cell" data-label="Thesis">${e(p.thesis_title||'Title to be agreed')}</td><td data-label="Expected defence">${p.defence_date?e(defenceText(p.defence_date)):'—'}</td><td data-label="Latest progress">${latest?e(dateText(latest.created_at)):'No updates yet'}</td><td><button class="secondary small-button" data-action="student" data-id="${e(p.id)}" aria-label="Open ${e(p.full_name)}">Open →</button></td></tr>`;}).join('')}</tbody></table></div>${list.length?'':empty('No students found','Add a student or change your search.')}`;
 }
 function progress() { const reports=sortedReports(); return `<div class="progress-layout"><section class="panel"><div class="panel-heading"><h2>${isSupervisor()?'Student submissions':'Your submissions'}</h2><span class="muted small">${reports.length} updates</span></div>${reports.length?reports.map(reportCard).join(''):empty('Start with a short update','Share what you have done, what comes next, and where you need help.')}</section>${!isSupervisor()?`<section class="panel"><div class="panel-heading"><h2>Your next steps</h2></div>${taskList([...data.tasks].sort((a,b)=>Number(a.completed)-Number(b.completed)))}</section>`:''}</div>`; }
 function meetingCard(s) {
-  return `<button class="meeting-card" data-action="meeting" data-id="${e(s.id)}"><div class="date-tile"><strong>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,day:'numeric'})}</strong><span>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,month:'short'})}</span></div><div><strong>${isSupervisor()?e(studentName(s.booked_by)):'Supervision meeting'}</strong><small>${e(time(s.starts_at))}–${e(time(s.ends_at))} · ${e(s.location)}</small>${s.meeting_notes?badge('Meeting notes added','green'):''}</div><span class="arrow">→</span></button>`;
+  return `<button class="meeting-card" data-action="meeting" data-id="${e(s.id)}"><div class="date-tile"><strong>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,day:'numeric'})}</strong><span>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,month:'short'})}</span></div><div class="grow"><strong>${isSupervisor()?e(studentName(s.booked_by)):'Supervision meeting'}</strong><small>${e(time(s.starts_at))}–${e(time(s.ends_at))} · ${e(s.location)}</small>${s.meeting_notes?badge('Meeting notes added','green'):''}</div><span class="arrow">→</span></button>`;
 }
 function calendar() {
   const [y,m]=month.split('-').map(Number); const first=new Date(Date.UTC(y,m-1,1));
@@ -185,7 +192,7 @@ function renderImport() {
   const count = status => rows.filter(row => row.status === status).length;
   const candidates = rows.filter(row => row.status === 'pending').length;
   const controls = `<div class="form-actions">${done ? '<button class="secondary" data-action="download-import-results">Download results</button>' : ''}<button class="secondary" data-action="close" ${running ? 'disabled' : ''}>${done ? 'Close' : 'Cancel'}</button>${!done ? `<button class="primary" data-action="create-import" ${running || !candidates ? 'disabled' : ''}>Create ${candidates} accounts</button>` : ''}</div>`;
-  target.innerHTML = `<p role="status" id="student-import-status">${running ? 'Creating accounts… Keep this page open.' : done ? `Finished: ${count('created')} created, ${count('skipped')} skipped, ${count('failed')} need attention.` : `${rows.length} students loaded; ${candidates} new accounts to create.`}</p>${controls}<div class="table-wrap"><table><thead><tr><th>Student</th><th>Thesis</th><th>Expected defence</th><th>Status</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${e(row.full_name)}</strong><br><small>@${e(row.username)}</small></td><td class="title-cell">${e(row.thesis_title)}</td><td>${row.defence_date ? e(defenceText(row.defence_date)) : '—'}</td><td>${badge(row.status, row.status === 'created' ? 'green' : row.status === 'failed' ? 'amber' : '')}</td></tr>`).join('')}</tbody></table></div>${done ? '<p class="small muted">Use the temporary password from your private account list only for rows marked created. Skipped accounts keep their existing password. If a request failed, check the student list before retrying, and check your project’s password requirements.</p>' : ''}`;
+  target.innerHTML = `<p role="status" id="student-import-status">${running ? 'Creating accounts… Keep this page open.' : done ? `Finished: ${count('created')} created, ${count('skipped')} skipped, ${count('failed')} need attention.` : `${rows.length} students loaded; ${candidates} new accounts to create.`}</p>${controls}<div class="table-wrap"><table class="student-table"><caption class="sr-only">Student import preview</caption><thead><tr><th>Student</th><th>Thesis</th><th>Expected defence</th><th>Status</th></tr></thead><tbody>${rows.map(row => `<tr><td><strong>${e(row.full_name)}</strong><br><small>@${e(row.username)}</small></td><td class="title-cell" data-label="Thesis">${e(row.thesis_title)}</td><td data-label="Expected defence">${row.defence_date ? e(defenceText(row.defence_date)) : '—'}</td><td data-label="Status">${badge(row.status, row.status === 'created' ? 'green' : row.status === 'failed' ? 'amber' : '')}</td></tr>`).join('')}</tbody></table></div>${done ? '<p class="small muted">Use the temporary password from your private account list only for rows marked created. Skipped accounts keep their existing password. If a request failed, check the student list before retrying, and check your project’s password requirements.</p>' : ''}`;
   modal.querySelector('[data-action="close"]').disabled = running;
   modal.querySelector('[name="student-import-file"]').disabled = running || done;
 }
@@ -251,7 +258,7 @@ document.addEventListener('click', async event => {
   if (action==='live' && (!DEMO || user)) return;
   if (action==='connection') return connectionDialog();
   if (!LOCAL && ['demo','switch-demo','reset-demo'].includes(action)) return;
-  if (action==='view') { view=button.dataset.view; return render(); }
+  if (action==='view') { view=button.dataset.view; render(); window.scrollTo(0,0); app.querySelector('.page-title')?.focus({preventScroll:true}); return; }
   if (action==='day') { selectedDay=button.dataset.day; return render(); }
   if (action==='month') { const [y,m]=month.split('-').map(Number); month=new Date(Date.UTC(y,m-1+Number(button.dataset.offset),1)).toISOString().slice(0,7); return render(); }
   if (action==='new-report') return newReport();
@@ -334,7 +341,11 @@ document.addEventListener('change', event=>{
   if (event.target.name==='pdf') validatePDF(event.target.files[0]).catch(err=>{event.target.value='';toast(err.message,true);});
 });
 document.addEventListener('input', event=>{
-  if(event.target.id==='student-search'){studentFilter=event.target.value;const pos=event.target.selectionStart;render();const input=document.querySelector('#student-search');input.focus();if(input.type==='text')input.setSelectionRange(pos,pos);}
+  if (event.target.id==='student-search') {
+    studentFilter=event.target.value;
+    // Keep the native input intact so typing, selection and undo retain their place.
+    document.querySelector('#student-results').innerHTML=studentResults();
+  }
 });
 modal.addEventListener('click', event=>{if(!studentImport?.running&&event.target===modal&&event.clientX<modal.getBoundingClientRect().left)closeDialog();});
 modal.addEventListener('cancel', event => { event.preventDefault(); if (!studentImport?.running) closeDialog(); });
@@ -357,7 +368,7 @@ async function start() {
     const config=getConnection();
     if(DEMO && !invitation.has('url'))store=new DemoStore();else if(config) { store=new SupabaseStore(config); localStorage.setItem('thesis.mode.v1','live'); } else localStorage.removeItem('thesis.mode.v1');
     if(store)user=await store.currentUser();
-    if(user)await refresh();else render();
+    if(user)await refresh();else { render(); if(SETUP)connectionDialog(); }
   } catch(err) { user=null;render();toast(err.message,true); }
 }
 start();
