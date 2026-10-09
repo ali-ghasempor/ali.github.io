@@ -1,4 +1,4 @@
-import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js';
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-09-pdf';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -10,7 +10,8 @@ const SETUP = LOCAL && new URLSearchParams(location.search).get('setup') === '1'
 let store, user, toastTimer, loading = false;
 let data = { profiles: [], reports: [], comments: [], tasks: [], slots: [] };
 let view = 'overview', studentFilter = '', showArchived = false;
-let studentImport = null;
+let studentImport = null, pdfSession = null;
+const uploadTypes = { notes: 'Research notes', data: 'Data', presentation: 'Presentation', findings: 'Findings and graphs', other: 'Other' };
 const dateKey = date => new Intl.DateTimeFormat('sv-SE', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(date));
 const time = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit' }).format(new Date(date));
 const dateText = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(date.length === 10 ? `${date}T12:00:00Z` : date));
@@ -29,7 +30,8 @@ const canConfigure = () => LOCAL && (isSupervisor() || (!user && SETUP));
 const sortedReports = () => [...data.reports].sort((a, b) => b.created_at.localeCompare(a.created_at));
 const futureMeetings = () => data.slots.filter(s => s.booked_by && new Date(s.starts_at) > new Date()).sort((a, b) => a.starts_at.localeCompare(b.starts_at));
 const openTasks = () => data.tasks.filter(t => !t.completed);
-const hasFeedback = r => data.comments.some(c => c.report_id === r.id);
+const pdfFeedback = id => (data.reviews || []).find(r => r.report_id === id);
+const hasFeedback = r => data.comments.some(c => c.report_id === r.id) || Boolean(pdfFeedback(r.id));
 const icons = {
   overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   students: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M15 3.13a4 4 0 0 1 0 7.75"/><circle cx="9" cy="7" r="4"/>',
@@ -52,7 +54,7 @@ function dialog(title, html, wide = false) {
   modal.className = wide ? 'wide' : ''; modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${e(title)}</h2><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>${html}`;
   modal.showModal();
 }
-function closeDialog() { modal.close(); modal.innerHTML = ''; studentImport = null; }
+function closeDialog() { if (pdfSession && !pdfSession.canClose()) return false; pdfSession?.dispose(); pdfSession = null; modal.close(); modal.innerHTML = ''; studentImport = null; return true; }
 function field(label, html, extra = '') { return `<label class="field ${extra}"><span>${e(label)}</span>${html}</label>`; }
 function actions(label) { return `<div class="form-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit">${e(label)}</button></div>`; }
 async function busy(button, fn) {
@@ -106,7 +108,7 @@ function overview() {
     <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2></div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
 }
 function reportCard(r) {
-  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(isSupervisor()&&r.dismissed_at?'Dismissed from overview':hasFeedback(r)?'Feedback added':'Awaiting feedback',r.dismissed_at&&isSupervisor()?'':hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${r.kind==='thesis'?'Thesis draft':'Progress update'}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
+  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(isSupervisor()&&r.dismissed_at?'Dismissed from overview':hasFeedback(r)?'Feedback added':'Awaiting feedback',r.dismissed_at&&isSupervisor()?'':hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${r.kind==='thesis'?'Thesis draft':'Progress update · '+e(uploadTypes[r.document_type]||'Other')}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
 }
 function taskList(tasks) {
   if (!tasks.length) return empty('Nothing outstanding','New next steps from your supervisor will appear here.');
@@ -153,12 +155,28 @@ function connectionDialog() {
   dialog('Connect your workspace',`<p class="muted">Enter the project URL and publishable key from Supabase. These are saved only in this browser.</p><form data-form="connection">${field('Project URL',`<input name="url" type="url" required placeholder="https://your-project.supabase.co" value="${e(config?.url||'')}">`)}${field('Publishable key',`<input name="key" required autocomplete="off" spellcheck="false" placeholder="sb_publishable_…" value="${e(config?.key||'')}">`)}<p class="small muted">Your supervisor must complete the Supabase setup before real accounts can sign in.</p>${actions('Save connection')}</form>${config?'<button class="text-button danger" data-action="clear-connection">Reset to website connection</button>':''}`);
 }
 function newReport() {
-  dialog('Share your progress',`<form data-form="report">${field('Update title','<input name="title" required maxlength="160" placeholder="What have you been working on?">')}${field('Submission type','<select name="kind"><option value="progress">Progress update</option><option value="thesis">Thesis draft</option></select>')}${field('Progress notes','<textarea name="body" required minlength="10" maxlength="10000" rows="5" placeholder="What you completed, your next steps, and anything you need help with…"></textarea>')}${field('Attach a PDF (optional)','<input name="pdf" type="file" accept="application/pdf,.pdf"><small>PDF only · up to 20 MB</small>')}${field('Or add a sharing link (optional)','<input name="share_url" type="url" placeholder="https://…"><small>Personal or university Drive. Make sure your supervisor has permission to open it.</small>')}${actions('Submit progress')}</form>`);
+  dialog('Share your progress',`<form data-form="report">${field('Update title','<input name="title" required maxlength="160" placeholder="What have you been working on?">')}${field('Submission type','<select name="kind"><option value="progress">Progress update</option><option value="thesis">Thesis draft</option></select>')}${field('What are you uploading?',`<select name="document_type">${Object.entries(uploadTypes).map(([value,label])=>`<option value="${value}">${e(label)}</option>`).join('')}</select><small>Choose Thesis draft above for your main thesis PDF and its version comparison.</small>`,'upload-category')}${field('Progress notes','<textarea name="body" required minlength="10" maxlength="10000" rows="5" placeholder="What you completed, your next steps, and anything you need help with…"></textarea>')}${field('Attach a PDF (optional)','<input name="pdf" type="file" accept="application/pdf,.pdf"><small>PDF only · up to 20 MB</small>')}${field('Or add a sharing link (optional)','<input name="share_url" type="url" placeholder="https://…"><small>Personal or university Drive. Make sure your supervisor has permission to open it.</small>')}${actions('Submit progress')}</form>`);
 }
 function reportDialog(id) {
   const r=data.reports.find(r=>r.id===id); if (!r) return;
   const comments=data.comments.filter(c=>c.report_id===id).sort((a,b)=>a.created_at.localeCompare(b.created_at));
-  dialog(r.title,`<p class="muted">${e(studentName(r.student_id))} · ${e(dateText(r.created_at))}</p><div class="prose">${e(r.body)}</div><div class="document-actions">${isSupervisor()?`<button class="secondary" data-action="${r.dismissed_at?'restore-report':'dismiss-report'}" data-id="${e(r.id)}">${r.dismissed_at?'Restore to overview':'Dismiss from overview'}</button>`:''}${r.file_path?`<button class="secondary" data-action="file" data-id="${e(r.id)}">▧ Open ${e(r.file_name)}</button>`:''}${safeShareURL(r.share_url)?`<a class="secondary" href="${e(safeShareURL(r.share_url))}" target="_blank" rel="noopener noreferrer">↗ Open shared document</a>`:''}</div><h3>Supervisor feedback</h3>${comments.length?comments.map(c=>`<div class="comment"><div class="row"><strong>Supervisor</strong><small>${e(dateText(c.created_at))}</small></div><p class="prose">${e(c.body)}</p></div>`).join(''):'<p class="muted">No feedback yet.</p>'}${isSupervisor()?`<form data-form="comment" data-id="${e(id)}">${field('Leave a comment','<textarea name="body" rows="3" required maxlength="10000" placeholder="Feedback, decisions, and what to focus on next…"></textarea>')}<button class="primary" type="submit">Add feedback</button></form><hr><form data-form="task" data-id="${e(r.student_id)}">${field('Assign a next step','<input name="title" required maxlength="500" placeholder="A concrete next action">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="secondary" type="submit">Add next step</button></form>`:''}`,true);
+  dialog(r.title,`<p class="muted">${e(studentName(r.student_id))} · ${e(dateText(r.created_at))}</p><div class="prose">${e(r.body)}</div><div class="document-actions">${isSupervisor()?`<button class="secondary" data-action="${r.dismissed_at?'restore-report':'dismiss-report'}" data-id="${e(r.id)}">${r.dismissed_at?'Restore to overview':'Dismiss from overview'}</button>`:''}${r.file_path?`<button class="secondary" data-action="file" data-id="${e(r.id)}">▧ Open ${e(r.file_name)}</button>`:''}${r.file_path&&(isSupervisor()||pdfFeedback(id))?`<button class="${isSupervisor()?'primary':'secondary'}" data-action="pdf-review" data-id="${e(id)}">${isSupervisor()?'Review PDF & add feedback':'View PDF feedback'}</button>`:''}${r.kind==='thesis'&&r.file_path&&isSupervisor()?`<button class="secondary" data-action="pdf-compare" data-id="${e(id)}">Compare thesis versions</button>`:''}${safeShareURL(r.share_url)?`<a class="secondary" href="${e(safeShareURL(r.share_url))}" target="_blank" rel="noopener noreferrer">↗ Open shared document</a>`:''}</div><h3>Supervisor feedback</h3>${pdfFeedback(id)?`<p class="notice green">PDF feedback shared on ${e(dateText(pdfFeedback(id).updated_at))}. Open ${isSupervisor()?'Review PDF & add feedback':'View PDF feedback'} to read the highlights and comments.</p>`:''}${comments.length?comments.map(c=>`<div class="comment"><div class="row"><strong>Supervisor</strong><small>${e(dateText(c.created_at))}</small></div><p class="prose">${e(c.body)}</p></div>`).join(''):'<p class="muted">No feedback yet.</p>'}${isSupervisor()?`<form data-form="comment" data-id="${e(id)}">${field('Leave a comment','<textarea name="body" rows="3" required maxlength="10000" placeholder="Feedback, decisions, and what to focus on next…"></textarea>')}<button class="primary" type="submit">Add feedback</button></form><hr><form data-form="task" data-id="${e(r.student_id)}">${field('Assign a next step','<input name="title" required maxlength="500" placeholder="A concrete next action">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="secondary" type="submit">Add next step</button></form>`:''}`,true);
+}
+async function pdfDialog(id, compare = false) {
+  const r = data.reports.find(r => r.id === id);
+  if (!r?.file_path || (compare && (!isSupervisor() || r.kind !== 'thesis'))) return;
+  if (modal.open && !closeDialog()) return;
+  dialog(compare ? 'Compare thesis versions' : isSupervisor() ? 'Review PDF & add feedback' : 'PDF feedback', '<div id="pdf-workspace"><p role="status">Loading PDF tools...</p></div>', true);
+  modal.classList.add('pdf-dialog');
+  const root = modal.querySelector('#pdf-workspace');
+  try {
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-09-pdf');
+    if (!root.isConnected || !modal.open) return;
+    pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports }) : openReview(root, {
+      store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),
+      onShared: saved => { data.reviews ||= []; const old = pdfFeedback(id); if (old) Object.assign(old, saved); else data.reviews.push(saved); render(); toast('PDF feedback shared. The student can now open it from this submission.'); }
+    });
+  } catch (err) { if (root.isConnected) { root.textContent = err.message; toast(err.message, true); } }
 }
 function addStudent() {
   dialog('Create a student account',`<form data-form="student">${field('Full name','<input name="full_name" required maxlength="120" autocomplete="off">')}${field('Username','<input name="username" required pattern="[a-z0-9][a-z0-9._-]{2,31}" minlength="3" maxlength="32" autocomplete="off" placeholder="e.g. anna.s"><small>3–32 lowercase letters, numbers, dots, underscores or hyphens.</small>')}${field('Initial password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><small>At least 12 characters. Share it privately with the student.</small>')}${field('Thesis title','<textarea name="thesis_title" rows="2" maxlength="500"></textarea>')}${field('Expected defence month (optional)','<input name="expected_defence" type="month">')}${actions('Create account')}</form>`);
@@ -263,7 +281,8 @@ document.addEventListener('click', async event => {
   if (action==='day') { selectedDay=button.dataset.day; return render(); }
   if (action==='month') { const [y,m]=month.split('-').map(Number); month=new Date(Date.UTC(y,m-1+Number(button.dataset.offset),1)).toISOString().slice(0,7); return render(); }
   if (action==='new-report') return newReport();
-  if (action==='report') { if (modal.open) closeDialog(); return reportDialog(id); }
+  if (action==='pdf-review' || action==='pdf-compare') return pdfDialog(id, action==='pdf-compare');
+  if (action==='report') { if (modal.open && !closeDialog()) return; return reportDialog(id); }
   if (action==='student') return studentDialog(id);
   if (action==='add-student') return addStudent();
   if (action==='availability') return availabilityDialog();
@@ -305,7 +324,7 @@ document.addEventListener('submit', event => {
     if (type==='my-password') { await store.changeMyPassword(values.current_password,values.new_password,values.confirm_password); form.reset(); toast('Password changed. Use your new password next time you sign in.'); return; }
     if (type==='student') { if (!isSupervisor()) return; await store.account('create',{full_name:values.full_name,password:values.password,thesis_title:values.thesis_title,defence_date:defenceDate(values.expected_defence),username:values.username.trim().toLowerCase()}); toast('Student account created. Share the login privately.'); }
     if (type==='password') { await store.account('password',{student_id:form.dataset.id,password:values.password}); toast('Password reset.'); }
-    if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
+    if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,document_type:values.kind==='thesis'?'thesis':values.document_type||'other',body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
     if (type==='comment') { await store.comment(form.dataset.id,values.body.trim()); const id=form.dataset.id; closeDialog(); await refresh(); reportDialog(id); toast('Feedback added.'); return; }
     if (type==='task') { await store.task(form.dataset.id,values.title.trim(),values.due_date); toast('Next step added.'); }
     if (type==='book') { if (values.contact_email.trim().toLowerCase()!==user.contact_email) await store.updateMyContact(values.contact_email); await store.book(form.dataset.id,values.agenda.trim()); toast('Meeting booked.'); }
@@ -321,6 +340,11 @@ document.addEventListener('submit', event => {
   });
 });
 document.addEventListener('change', event=>{
+  if (event.target.name==='kind' && event.target.closest('[data-form="report"]')) {
+    const category = event.target.form.querySelector('.upload-category');
+    category.hidden = event.target.value==='thesis'; category.querySelector('select').disabled = category.hidden;
+  }
+
   if (event.target.name==='student-import-file') {
     const input = event.target, file = input.files[0];
     if (!isSupervisor() || loading || studentImport?.running || studentImport?.done) return;

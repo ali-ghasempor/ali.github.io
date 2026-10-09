@@ -148,7 +148,14 @@ export class SupabaseStore {
       }
       return [name, rows];
     }));
-    return Object.fromEntries(results);
+    const reviews = [];
+    for (let offset = 0; ; offset += 1000) {
+      const result = await this.client.from('thesis_pdf_reviews').select('report_id,reviewer_id,revision,updated_at').order('report_id').range(offset, offset + 999);
+      if (['42P01','PGRST205'].includes(result.error?.code)) break;
+      fail(result.error); reviews.push(...result.data); if (result.data.length < 1000) break;
+    }
+    return { ...Object.fromEntries(results), reviews };
+
   }
   async account(action, values) {
     const { data, error } = await this.client.functions.invoke('thesis-accounts', { body: { action, ...values } });
@@ -194,10 +201,21 @@ export class SupabaseStore {
     }
     const { error } = await this.client.from('thesis_reports').insert(row);
     if (error && file) await this.client.storage.from('thesis-files').remove([path]);
+    if (error?.code === 'PGRST204' || error?.code === '42703') throw new Error('Run supabase/pdf-review-update.sql before uploading categorized submissions.');
     fail(error);
   }
   async fileURL(report) {
     const { data, error } = await this.client.storage.from('thesis-files').createSignedUrl(report.file_path, 300); fail(error); return data.signedUrl;
+  }
+  async pdfReview(report_id) {
+    const { data, error } = await this.client.from('thesis_pdf_reviews').select('*').eq('report_id', report_id).maybeSingle();
+    if (['42P01','PGRST205'].includes(error?.code)) throw new Error('PDF feedback needs the database update. Run supabase/pdf-review-update.sql and redeploy thesis-api.');
+    fail(error); return data;
+  }
+  async sharePdfReview(report_id, annotations, revision) {
+    const { data, error } = await this.client.rpc('thesis_share_pdf_review', { target_report: report_id, marks: annotations, expected_revision: revision });
+    if (error?.code === 'PGRST202') throw new Error('Run supabase/pdf-review-update.sql and redeploy thesis-api before sharing PDF feedback.');
+    fail(error); return data;
   }
   async comment(report_id, body) { const { error } = await this.client.from('thesis_comments').insert({ report_id, body, author_id: this.user.id }); fail(error); }
   async task(student_id, title, due_date) { const { error } = await this.client.from('thesis_tasks').insert({ student_id, title, due_date: due_date || null, created_by: this.user.id }); fail(error); }
@@ -301,6 +319,7 @@ export class DemoStore {
     const reports = data.reports.filter(r => r.student_id === this.user.id);
     return { profiles: data.profiles.filter(p => p.id === this.user.id), reports,
       comments: data.comments.filter(c => reports.some(r => r.id === c.report_id)),
+      reviews: (data.reviews || []).filter(c => reports.some(r => r.id === c.report_id)),
       tasks: data.tasks.filter(t => t.student_id === this.user.id),
       slots: data.slots.filter(s => !s.booked_by || s.booked_by === this.user.id) };
   }
@@ -338,6 +357,20 @@ export class DemoStore {
       file_name: file?.name || null, file_size: file?.size || null, created_at: now() }); this.write(d);
   }
   async fileURL(report) { const file = await demoFile('get', report.file_path); if (!file) throw new Error('This demo file is not in this browser.'); return URL.createObjectURL(file); }
+  async pdfReview(report_id) {
+    const d = await this.load();
+    if (!d.reports.some(r => r.id === report_id && r.file_path)) throw new Error('PDF not available to this account.');
+    return (d.reviews || []).find(r => r.report_id === report_id) || null;
+  }
+  async sharePdfReview(report_id, annotations, revision) {
+    this.requireSupervisor(); const d = this.read();
+    if (!d.reports.some(r => r.id === report_id && r.file_path)) throw new Error('An uploaded PDF is required.');
+    d.reviews ||= []; const existing = d.reviews.find(r => r.report_id === report_id);
+    if ((existing?.revision || 0) !== revision) throw new Error('This PDF review has changed. Reopen it before sharing your feedback.');
+    const review = { report_id, annotations, reviewer_id: this.user.id, revision: revision + 1, updated_at: now() };
+    if (existing) Object.assign(existing, review); else d.reviews.push(review);
+    this.write(d); return review;
+  }
   async comment(report_id, body) { this.requireSupervisor(); const d = this.read(); d.comments.push({ id: uuid(), report_id, body, author_id: this.user.id, created_at: now() }); this.write(d); }
   async task(student_id, title, due_date) { this.requireSupervisor(); const d = this.read(); d.tasks.push({ id: uuid(), student_id, title, due_date: due_date || null, created_by: this.user.id, completed: false, created_at: now() }); this.write(d); }
   async completeTask(id, completed) { const d = this.read(); const task = d.tasks.find(t => t.id === id && (t.student_id === this.user.id || this.user.role === 'supervisor')); if (!task) throw new Error('Task not found.'); task.completed = completed; this.write(d); }
