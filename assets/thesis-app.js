@@ -1,4 +1,4 @@
-import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-09-pdf';
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-09-backup';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -10,7 +10,7 @@ const SETUP = LOCAL && new URLSearchParams(location.search).get('setup') === '1'
 let store, user, toastTimer, loading = false;
 let data = { profiles: [], reports: [], comments: [], tasks: [], slots: [] };
 let view = 'overview', studentFilter = '', showArchived = false;
-let studentImport = null, pdfSession = null;
+let studentImport = null, pdfSession = null, backupRunning = false;
 const uploadTypes = { notes: 'Research notes', data: 'Data', presentation: 'Presentation', findings: 'Findings and graphs', other: 'Other' };
 const dateKey = date => new Intl.DateTimeFormat('sv-SE', { timeZone: TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(date));
 const time = date => new Intl.DateTimeFormat('en-GB', { timeZone: TIMEZONE, hour: '2-digit', minute: '2-digit' }).format(new Date(date));
@@ -54,7 +54,7 @@ function dialog(title, html, wide = false) {
   modal.className = wide ? 'wide' : ''; modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${e(title)}</h2><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>${html}`;
   modal.showModal();
 }
-function closeDialog() { if (pdfSession && !pdfSession.canClose()) return false; pdfSession?.dispose(); pdfSession = null; modal.close(); modal.innerHTML = ''; studentImport = null; return true; }
+function closeDialog() { if (backupRunning || (pdfSession && !pdfSession.canClose())) return false; pdfSession?.dispose(); pdfSession = null; modal.close(); modal.innerHTML = ''; studentImport = null; return true; }
 function field(label, html, extra = '') { return `<label class="field ${extra}"><span>${e(label)}</span>${html}</label>`; }
 function actions(label) { return `<div class="form-actions"><button type="button" class="secondary" data-action="close">Cancel</button><button class="primary" type="submit">${e(label)}</button></div>`; }
 async function busy(button, fn) {
@@ -140,7 +140,35 @@ function settings() {
     <section class="panel padded"><h2>Change password</h2><p>Choose a password only you know.</p><form data-form="my-password">${field('Current password','<input name="current_password" type="password" required autocomplete="current-password">')}${field('New password','<input name="new_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"><small>12–128 characters. Use a unique password.</small>')}${field('Confirm new password','<input name="confirm_password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">')}<button class="primary" type="submit">Change password</button></form><p class="small muted">${isSupervisor()?'If you forget your password, recover your account through the Supabase dashboard.':'Forgot your current password? Ask your supervisor to reset it, then sign in and choose a new one here.'}</p></section>`;
   const studentAccount = `<section class="panel padded"><h2>Your thesis</h2><form data-form="my-thesis">${field('Thesis title',`<textarea name="thesis_title" required maxlength="500" rows="4">${e(user.thesis_title)}</textarea>`)}<button class="primary" type="submit">Save thesis title</button></form><p class="small muted">Your supervisor sees the updated title. Discuss significant changes to your thesis scope together.</p></section><section class="panel padded"><h2>Meeting invitations</h2><form data-form="my-contact">${field('Contact email',`<input name="contact_email" type="email" maxlength="254" value="${e(user.contact_email||'')}" autocomplete="email">`)}<button class="primary" type="submit">Save email</button></form><p class="small muted">Use an email you can access. Teams calendar invitations are sent here; your sign-in username stays the same.</p></section>`;
   if (!isSupervisor()) return `<div class="settings-grid">${studentAccount}${account}</div>`;
-  return `<div class="settings-grid">${account}<section class="panel padded"><h2>Connection</h2><p>${store.mode==='demo'?'You are using the local demo. No sample data is sent to Supabase.':'This browser is connected to your Supabase project. Private records are protected by account permissions.'}</p>${LOCAL?'<button class="secondary" data-action="connection">Change connection</button>':''}${store.mode==='live'?'<button class="text-button" data-action="copy-invite">Copy student sign-in link</button>':''}<p class="small muted">${store.backend?'Your session uses an HttpOnly cookie. Login tokens stay in the Supabase backend; refreshing the page keeps you signed in for up to eight hours.':'The website includes its public project URL and publishable key. This local connection keeps login tokens in memory only.'}</p></section>${LOCAL?`<section class="panel padded"><h2>Local testing</h2><p>The demo lets you try both roles with fictional records. PDFs and notes stay in this browser and do not sync to other devices.</p><button class="secondary" data-action="switch-demo">Open demo sign-in</button>${store.mode==='demo'?'<button class="text-button danger" data-action="reset-demo">Reset sample data</button>':''}</section>`:''}${store.mode==='live'?'<section class="panel padded"><h2>Deployment check</h2><p>Check the database, private PDF storage, and student account function.</p><button class="secondary" data-action="check-setup">Check production setup</button></section>':''}<section class="panel padded"><h2>Microsoft 365</h2><p>Booking and progress notifications are delivered through your university Power Automate flow. Approve a booked meeting to send the student a Teams calendar invitation.</p><button class="secondary" data-action="automation-status">Check connection &amp; queue</button><p class="small muted">The flow connection and its credentials stay in Supabase and Power Automate. Students add their invitation email in Account.</p></section><section class="panel padded"><h2>Meeting times</h2><p>All meeting dates and times use <strong>Europe/Tallinn</strong>, even if your device is set to another timezone.</p><p class="small muted">PDF limit: 20 MB. Drive links are supported when uploading is inconvenient.</p></section></div>`;
+  return `<div class="settings-grid">${account}<section class="panel padded"><h2>Connection</h2><p>${store.mode==='demo'?'You are using the local demo. No sample data is sent to Supabase.':'This browser is connected to your Supabase project. Private records are protected by account permissions.'}</p>${LOCAL?'<button class="secondary" data-action="connection">Change connection</button>':''}${store.mode==='live'?'<button class="text-button" data-action="copy-invite">Copy student sign-in link</button>':''}<p class="small muted">${store.backend?'Your session uses an HttpOnly cookie. Login tokens stay in the Supabase backend; refreshing the page keeps you signed in for up to eight hours.':'The website includes its public project URL and publishable key. This local connection keeps login tokens in memory only.'}</p></section>${LOCAL?`<section class="panel padded"><h2>Local testing</h2><p>The demo lets you try both roles with fictional records. PDFs and notes stay in this browser and do not sync to other devices.</p><button class="secondary" data-action="switch-demo">Open demo sign-in</button>${store.mode==='demo'?'<button class="text-button danger" data-action="reset-demo">Reset sample data</button>':''}</section>`:''}${store.mode==='live'?'<section class="panel padded"><h2>Deployment check</h2><p>Check the database, private PDF storage, and student account function.</p><button class="secondary" data-action="check-setup">Check production setup</button></section>':''}<section class="panel padded"><h2>Workspace backup</h2><p>Download all students, progress history, feedback, tasks, meetings, PDFs and PDF annotations. Archived students and dismissed updates are included.</p><button class="secondary" data-action="download-backup">Download workspace ZIP</button><p class="small muted">The archive is private and unencrypted. Extract it and open index.html to read progress offline. External Drive files, account passwords and Microsoft 365 contents are excluded. For large archives, use the private Windows backup tool.</p></section><section class="panel padded"><h2>Microsoft 365</h2><p>Booking and progress notifications are delivered through your university Power Automate flow. Approve a booked meeting to send the student a Teams calendar invitation.</p><button class="secondary" data-action="automation-status">Check connection &amp; queue</button><p class="small muted">The flow connection and its credentials stay in Supabase and Power Automate. Students add their invitation email in Account.</p></section><section class="panel padded"><h2>Meeting times</h2><p>All meeting dates and times use <strong>Europe/Tallinn</strong>, even if your device is set to another timezone.</p><p class="small muted">PDF limit: 20 MB. Drive links are supported when uploading is inconvenient.</p></section></div>`;
+}
+async function downloadWorkspaceBackup() {
+  if (!isSupervisor()) return;
+  const backupStore = store;
+  dialog('Workspace backup', '<p id="backup-status" role="status">Preparing your backup…</p><p class="small muted">Keep this page open. The archive is checked before download; missing PDFs or changed records stop the backup.</p>');
+  backupRunning = true;
+  modal.querySelector('[data-action=close]').disabled = true;
+  const status = modal.querySelector('#backup-status');
+  const warn = event => { event.preventDefault(); event.returnValue = ''; };
+  window.addEventListener('beforeunload', warn);
+  try {
+    const { ZipWriter, createWorkspaceArchive, verifyArchive } = await import('./thesis-backup.js');
+    const chunks = [], zip = new ZipWriter(bytes => chunks.push(bytes), 512 * 1024 * 1024);
+    await createWorkspaceArchive({ mode: backupStore.mode, project: backupStore.project,
+      snapshot: () => backupStore.backupSnapshot(), file: path => backupStore.backupFile(path) }, zip, text => { status.textContent = text; });
+    status.textContent = 'Verifying the saved ZIP, record counts and PDF checksums…';
+    const blob = new Blob(chunks, { type: 'application/zip' });
+    const result = await verifyArchive(blob.size, async (start, length) => new Uint8Array(await blob.slice(start, start + length).arrayBuffer()));
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = `thesis-workspace-${backupStore.mode==='demo'?'demo-':''}${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+    status.textContent = `Verified and downloaded: ${result.counts.profiles} profiles, ${result.counts.reports} submissions, ${result.counts.comments} comments, ${result.counts.reviews} PDF reviews, ${result.counts.tasks} tasks, ${result.counts.slots} meeting slots and ${result.files} files. Extract the ZIP and open index.html. Keep it in a private backup location.`;
+  } catch (error) {
+    status.textContent = `Backup failed: ${error.message} No complete archive was downloaded.`;
+  } finally {
+    backupRunning = false; window.removeEventListener('beforeunload', warn);
+    modal.querySelector('[data-action=close]').disabled = false;
+  }
 }
 function automationDialog(status) {
   const counts = status.counts || {};
@@ -268,7 +296,7 @@ document.addEventListener('click', async event => {
   const button=event.target.closest('[data-action]'); if (!button) return;
   const action=button.dataset.action, id=button.dataset.id;
   if (action==='close') { if (!studentImport?.running) closeDialog(); return; }
-  if (['request-teams', 'automation-status', 'automation-retry', 'dismiss-report', 'restore-report', 'dismiss-all', 'import-students', 'create-import', 'download-import-results', 'add-student', 'student', 'password', 'archive'].includes(action) && !isSupervisor()) return;
+  if (['download-backup', 'request-teams', 'automation-status', 'automation-retry', 'dismiss-report', 'restore-report', 'dismiss-all', 'import-students', 'create-import', 'download-import-results', 'add-student', 'student', 'password', 'archive'].includes(action) && !isSupervisor()) return;
   if (action==='import-students') return importDialog();
   if (action==='download-import-results') return downloadImportResults();
   if (['connection','clear-connection'].includes(action) && !canConfigure()) return;
@@ -290,6 +318,7 @@ document.addEventListener('click', async event => {
   if (action==='meeting') return meetingDialog(id);
   if (action==='password') { closeDialog(); return dialog('Reset student password',`<form data-form="password" data-id="${e(id)}">${field('New password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">')}${actions('Reset password')}</form>`); }
   await busy(button, async()=>{
+    if (action==='download-backup') { await downloadWorkspaceBackup(); return; }
     if (action==='dismiss-report'||action==='restore-report') { await store.dismissReport(id,action==='dismiss-report'); closeDialog(); await refresh(); toast(action==='dismiss-report'?'Update dismissed. Its history and files are retained.':'Update restored to overview.'); return; }
     if (action==='dismiss-all') { await store.dismissAllReports(); await refresh(); toast('Overview cleared. Progress history and files are retained.'); return; }
     if (action==='automation-status') { automationDialog(await store.automation('status')); return; }

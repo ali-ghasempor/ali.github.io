@@ -73,6 +73,7 @@ export function createSignInLink(config, target = 'https://ali.cyberwise.ee/thes
 export class SupabaseStore {
   constructor(config) {
     this.mode = 'live';
+    this.project = config.url;
     // Remove sessions persisted by older releases without reading or reusing their tokens.
     for (const storage of [localStorage, sessionStorage]) {
       const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
@@ -212,6 +213,51 @@ export class SupabaseStore {
     if (['42P01','PGRST205'].includes(error?.code)) throw new Error('PDF feedback needs the database update. Run supabase/pdf-review-update.sql and redeploy thesis-api.');
     fail(error); return data;
   }
+  async backupSnapshot() {
+    if (this.user?.role !== 'supervisor' || !this.user.active) throw new Error('An active supervisor account is required.');
+    const { WORKSPACE_TABLES, tableName } = await import('./thesis-backup.js');
+    const workspace = {};
+    for (const name of WORKSPACE_TABLES) {
+      const rows = []; let total = null;
+      for (let offset = 0; ; ) {
+        const result = await this.client.from(tableName(name)).select('*', { count: 'exact' }).order(name === 'reviews' ? 'report_id' : 'id').range(offset, offset + 999).abortSignal(AbortSignal.timeout(60000));
+        fail(result.error);
+        if (!Number.isSafeInteger(result.count) || !Array.isArray(result.data) || (total !== null && total !== result.count)) throw new Error('The database changed or could not supply a complete record count. Try the backup again.');
+        total = result.count; rows.push(...result.data); offset += result.data.length;
+        if (offset === total) break;
+        if (!result.data.length || offset > total) throw new Error('The database returned an incomplete backup page.');
+      }
+      workspace[name] = rows;
+    }
+    if (!workspace.profiles.some(p => p.id === this.user.id && p.role === 'supervisor' && p.active)) throw new Error('Supervisor access ended during backup. Sign in again.');
+    const files = [];
+    const folders = [''];
+    for (let i = 0; i < folders.length; i++) {
+      const prefix = folders[i];
+      if (prefix.split('/').length > 16 || files.length + folders.length > 65500) throw new Error('Storage is too large for one workspace ZIP.');
+      for (let offset = 0; ; offset += 100) {
+        const { data, error } = await this.client.storage.from('thesis-files').list(prefix, { limit: 100, offset, sortBy: { column: 'name', order: 'asc' } }); fail(error);
+        if (!Array.isArray(data)) throw new Error('The PDF storage inventory is unavailable.');
+        for (const item of data) {
+          if (!item.name || /[\\/\x00-\x1f]/.test(item.name) || ['.', '..'].includes(item.name)) throw new Error('An unsafe PDF storage path was rejected.');
+          const path = prefix ? `${prefix}/${item.name}` : item.name;
+          if (item.id === null && item.metadata === null) { if (folders.includes(path)) throw new Error('Duplicate storage folder.'); folders.push(path); }
+          else files.push({ path, size: Number.isSafeInteger(item.metadata?.size) ? item.metadata.size : null, updated_at: item.updated_at || null });
+        }
+        if (data.length < 100) break;
+      }
+    }
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    return { workspace, files };
+  }
+  async backupFile(path) {
+    if (this.user?.role !== 'supervisor' || !this.user.active) throw new Error('An active supervisor account is required.');
+    const url = await this.fileURL({ file_path: path });
+    if (new URL(url).origin !== this.project) throw new Error('Unexpected PDF download destination.');
+    const response = await fetch(url, { credentials: 'omit', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(120000) });
+    if (!response.ok) throw new Error('A PDF could not be downloaded. No complete backup was created.');
+    return new Uint8Array(await response.arrayBuffer());
+  }
   async sharePdfReview(report_id, annotations, revision) {
     const { data, error } = await this.client.rpc('thesis_share_pdf_review', { target_report: report_id, marks: annotations, expected_revision: revision });
     if (error?.code === 'PGRST202') throw new Error('Run supabase/pdf-review-update.sql and redeploy thesis-api before sharing PDF feedback.');
@@ -274,6 +320,18 @@ export class DemoStore {
   read() { return JSON.parse(localStorage.getItem(DEMO_KEY)); }
   write(data) { localStorage.setItem(DEMO_KEY, JSON.stringify(data)); }
   requireSupervisor() { if (this.user?.role !== 'supervisor') throw new Error('Supervisor account required.'); }
+  async backupSnapshot() {
+    this.requireSupervisor(); const d = structuredClone(this.read());
+    d.profiles = d.profiles.map(({ password_hash, salt, ...profile }) => profile);
+    const workspace = Object.fromEntries(['profiles', 'reports', 'comments', 'tasks', 'slots', 'reviews'].map(name => [name, d[name] || []]));
+    const files = workspace.reports.filter(r => r.file_path).map(r => ({ path: r.file_path, size: r.file_size, updated_at: null })).sort((a, b) => a.path.localeCompare(b.path));
+    return { workspace, files };
+  }
+  async backupFile(path) {
+    this.requireSupervisor(); const file = await demoFile('get', path);
+    if (!file) throw new Error('A demo PDF is missing. No complete backup was created.');
+    return new Uint8Array(await file.arrayBuffer());
+  }
   async currentUser() { await this.init(); this.user = this.read().profiles.find(p => p.id === sessionStorage.getItem(DEMO_SESSION) && p.active); return this.user || null; }
   async login(username, password) {
     await this.init(); const p = this.read().profiles.find(p => p.username === username.trim().toLowerCase() && p.active);
