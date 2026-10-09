@@ -1,4 +1,4 @@
-import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-09-lockout';
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-10-notify';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -46,11 +46,37 @@ const icon = key => `<svg class="ui-icon" width="22" height="22" viewBox="0 0 24
 const safeShareURL = value => { try { return httpsURL(value); } catch { return null; } };
 const empty = (title, text) => `<div class="empty"><span class="empty-icon">◇</span><h3>${e(title)}</h3><p>${e(text)}</p></div>`;
 const badge = (text, type = '') => `<span class="badge ${type}">${e(text)}</span>`;
+// Browser-side errors go to the monitoring logs (no document text), at most 20 per page load and once per minute each.
+const reported = new Map(); let lastAction = 'none';
+function reportError(kind, message) {
+  try {
+    const key = `${kind}|${message}`;
+    if (!store || reported.size >= 20 || Date.now() - (reported.get(key) || 0) < 60000) return;
+    reported.set(key, Date.now());
+    store.reportError({ kind, message: String(message || '').slice(0, 2000), action: lastAction,
+      version: document.querySelector('meta[name="thesis-release"]')?.content || 'unknown' });
+  } catch { /* Reporting must never cause a new error. */ }
+}
+window.addEventListener('error', event => reportError('exception', event.message));
+window.addEventListener('unhandledrejection', event => reportError('rejection', event.reason?.message || String(event.reason)));
+// Remembers which control the user last used, so a report says where an error came from.
+document.addEventListener('click', event => {
+  const control = event.target.closest?.('[data-action],[data-pdf],[data-diff],[data-form]');
+  const name = control?.dataset.action || control?.dataset.pdf && 'pdf-' + control.dataset.pdf || control?.dataset.diff && 'diff-' + control.dataset.diff || control?.dataset.form && 'form-' + control.dataset.form;
+  if (name) lastAction = String(name).toLowerCase().replace(/[^a-z0-9:_-]/g, '').slice(0, 40) || lastAction;
+}, true);
 function toast(message, error = false) {
+  if (error) reportError('toast', message);
   const el = document.querySelector('#toast'); el.textContent = message; el.className = `toast ${error ? 'error' : ''}`; el.hidden = false;
   // An open dialog sits in the browser's top layer; reopening the popover puts the message above it.
   if (el.showPopover) { if (el.matches(':popover-open')) el.hidePopover(); el.showPopover(); }
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { if (el.hidePopover && el.matches(':popover-open')) el.hidePopover(); el.hidden = true; }, error ? 12000 : 4500);
+}
+// What the student receives after new feedback (see feedback-notification-update.sql).
+function feedbackNotice(reportId) {
+  if (store.mode === 'demo') return 'Demo only; no e-mail is sent.';
+  const report = data.reports.find(r => r.id === reportId), student = data.profiles.find(p => p.id === report?.student_id);
+  return student?.contact_email ? 'The student gets an e-mail about it in a few minutes.' : 'The student has no e-mail address in Account, so they will see it in the workspace.';
 }
 function dialog(title, html, wide = false) {
   modal.className = wide ? 'wide' : ''; modal.innerHTML = `<div class="modal-head"><h2 id="modal-title">${e(title)}</h2><button class="icon-button" data-action="close" aria-label="Close dialog">×</button></div>${html}`;
@@ -207,11 +233,11 @@ async function pdfDialog(id, compare = false) {
   modal.classList.add('pdf-dialog');
   const root = modal.querySelector('#pdf-workspace');
   try {
-    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-10-compare');
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-10-notify');
     if (!root.isConnected || !modal.open) return;
     pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports }) : openReview(root, {
       store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),
-      onShared: saved => { data.reviews ||= []; const old = pdfFeedback(id); if (old) Object.assign(old, saved); else data.reviews.push(saved); render(); toast('PDF feedback shared. The student can now open it from this submission.'); }
+      onShared: saved => { data.reviews ||= []; const old = pdfFeedback(id); if (old) Object.assign(old, saved); else data.reviews.push(saved); render(); toast(`PDF feedback shared. ${feedbackNotice(id)}`); }
     });
   } catch (err) { if (root.isConnected) { root.textContent = err.message; toast(err.message, true); } }
 }
@@ -371,7 +397,7 @@ document.addEventListener('submit', event => {
       catch { toast('Password reset. Check Settings → Sign-in protection if the student is still blocked.', true); }
     }
     if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,document_type:values.kind==='thesis'?'thesis':values.document_type||'other',body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
-    if (type==='comment') { await store.comment(form.dataset.id,values.body.trim()); const id=form.dataset.id; closeDialog(); await refresh(); reportDialog(id); toast('Feedback added.'); return; }
+    if (type==='comment') { await store.comment(form.dataset.id,values.body.trim()); const id=form.dataset.id; closeDialog(); await refresh(); reportDialog(id); toast(`Feedback added. ${feedbackNotice(id)}`); return; }
     if (type==='task') { await store.task(form.dataset.id,values.title.trim(),values.due_date); toast('Next step added.'); }
     if (type==='book') { if (values.contact_email.trim().toLowerCase()!==user.contact_email) await store.updateMyContact(values.contact_email); await store.book(form.dataset.id,values.agenda.trim()); toast('Meeting booked.'); }
     if (type==='meeting-notes') { await store.meetingNotes(form.dataset.id,values.notes.trim()); toast('Meeting notes saved.'); }

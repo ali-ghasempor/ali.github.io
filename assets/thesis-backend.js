@@ -37,6 +37,11 @@ export class BackendSession {
     return profile;
   }
   async logout() { await this.json('/logout', {}); this.expiresAt = 0; }
+  // Reports a browser-side error for monitoring. Never throws: reporting must not cause new errors.
+  reportError(details) {
+    this.request('/client-error', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(details) })
+      .then(response => response.body?.cancel(), () => undefined);
+  }
   async changePassword(current_password, password) {
     const result = await this.json('/password', { current_password, password });
     this.expiresAt = result.expires_at || 0;

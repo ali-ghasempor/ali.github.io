@@ -29,14 +29,17 @@ export function validAnnotations(marks, pages = 1000) {
   if (!Array.isArray(marks) || marks.length > 200 || new TextEncoder().encode(JSON.stringify(marks)).length > 48000)
     throw new Error('Use at most 200 annotations and 48 KB of feedback.');
   const ids = new Set();
-  for (const m of marks) {
+  marks.forEach((m, index) => {
+    if (m?.type === 'comment' && typeof m.text === 'string' && !m.text.trim())
+      throw new Error(`Comment ${index + 1} on page ${m.page} has no text. Type the comment or remove it.`);
+    if (typeof m?.text === 'string' && m.text.length > 2000) throw new Error(`Comment ${index + 1} is longer than 2,000 characters.`);
     if (!m || typeof m.id !== 'string' || !m.id || m.id.length > 80 || ids.has(m.id) ||
       !['highlight','comment'].includes(m.type) || !Number.isInteger(m.page) || m.page < 1 || m.page > pages ||
-      typeof m.text !== 'string' || m.text.length > 2000 || (m.type === 'comment' && !m.text.trim()) ||
+      typeof m.text !== 'string' ||
       !['x','y','w','h'].every(k => Number.isFinite(m[k]) && m[k] >= 0 && m[k] <= 1) ||
-      m.x + m.w > 1.001 || m.y + m.h > 1.001) throw new Error('Invalid PDF annotation.');
+      m.x + m.w > 1.001 || m.y + m.h > 1.001) throw new Error(`Annotation ${index + 1} is invalid. Remove it and add it again.`);
     ids.add(m.id);
-  }
+  });
   return marks;
 }
 async function documentPDF(store, report, signal) {
@@ -331,7 +334,9 @@ export function openReview(root, { store, report, readonly, onShared, onError })
     }
   }
   function feedback() {
-    root.querySelector('#pdf-mark-list').innerHTML = marks.length ? marks.map((m, i) => `<div class="pdf-mark"><button class="text-button" data-mark="${e(m.id)}">${i + 1}. ${m.type === 'highlight' ? 'Highlight' : 'Comment'} · page ${m.page}</button><p class="prose">${e(m.text || 'Highlighted region')}</p>${!readonly ? `<button class="text-button danger" data-remove="${e(m.id)}" aria-label="Remove annotation ${i + 1}">Remove</button>` : ''}</div>`).join('') : '<p class="muted">No PDF annotations yet.</p>';
+    // Marks that differ from what the student can already see are labelled, so new feedback is easy to spot.
+    const shared = new Map(JSON.parse(original).map(m => [m.id, m.text]));
+    root.querySelector('#pdf-mark-list').innerHTML = marks.length ? marks.map((m, i) => `<div class="pdf-mark${m.id === selected ? ' selected' : ''}"><button class="text-button" data-mark="${e(m.id)}">${i + 1}. ${m.type === 'highlight' ? 'Highlight' : 'Comment'} · page ${m.page}</button>${!readonly && shared.get(m.id) !== m.text ? ' <span class="badge amber">Not shared yet</span>' : ''}<p class="prose">${e(m.text || 'Highlighted region')}</p>${!readonly ? `<button class="text-button danger" data-remove="${e(m.id)}" aria-label="Remove annotation ${i + 1}">Remove</button>` : ''}</div>`).join('') : '<p class="muted">No PDF annotations yet.</p>';
     if (!readonly) root.querySelector('#pdf-save-status').textContent = dirty() ? 'Unshared changes. Select Share PDF feedback when ready.' : revision ? 'This PDF feedback is shared with the student.' : 'Changes stay in this view until you share them.';
     draw();
   }
@@ -361,12 +366,26 @@ export function openReview(root, { store, report, readonly, onShared, onError })
       status.textContent = `Page ${pageNumber} of ${doc.pdf.numPages}${readonly ? ' · Shared PDF feedback' : ` · ${tool === 'highlight' ? 'Drag to highlight' : tool === 'comment' ? 'Click to comment' : 'Scroll to read'}`}`;
     } catch (error) { if (!disposed && error.name !== 'RenderingCancelledException') status.textContent = error.message; }
   }
+  // A comment click that never got any text is dropped as soon as the reviewer moves on.
+  function dropEmpty(keep = null) {
+    const before = marks.length;
+    marks = marks.filter(m => m.id === keep || m.type !== 'comment' || m.text.trim());
+    if (marks.length === before) return;
+    if (!marks.some(m => m.id === selected)) { selected = null; root.querySelector('#pdf-note-form').hidden = true; }
+    feedback();
+  }
   function choose(id) {
+    if (!readonly) dropEmpty(id);
     selected = id; const mark = marks.find(m => m.id === id); if (!mark) return;
-    if (!readonly) { root.querySelector('#pdf-note-form').hidden = false; root.querySelector('#pdf-note').value = mark.text; }
+    if (!readonly) {
+      root.querySelector('#pdf-note-form').hidden = false; root.querySelector('#pdf-note').value = mark.text;
+      root.querySelector('#pdf-note-form .field span').textContent = `${mark.type === 'highlight' ? 'Comment on highlight' : 'Comment'} ${marks.indexOf(mark) + 1} · page ${mark.page}`;
+      feedback();
+    }
     pageNumber = mark.page; void renderPage();
   }
   function add(mark) {
+    dropEmpty();
     if (marks.length >= 200) { onError(new Error('Use at most 200 annotations per PDF.')); return; }
     mark.id = crypto.randomUUID(); mark.text ||= ''; marks.push(mark); selected = mark.id;
     feedback(); choose(mark.id); if (mark.type === 'comment') root.querySelector('#pdf-note').focus();
@@ -400,7 +419,7 @@ export function openReview(root, { store, report, readonly, onShared, onError })
       try {
         // Include the currently edited note so Share cannot discard text still in the field.
         const edited = marks.find(m => m.id === selected); if (edited) edited.text = root.querySelector('#pdf-note').value.trim();
-        validAnnotations(marks, doc.pdf.numPages); saving = true; controls().forEach(b => { b.disabled = true; });
+        dropEmpty(); validAnnotations(marks, doc.pdf.numPages); saving = true; controls().forEach(b => { b.disabled = true; });
         const saved = await store.sharePdfReview(report.id, marks, revision);
         revision = saved.revision; original = JSON.stringify(marks); feedback(); onShared(saved);
       } catch (error) { onError(error); }
@@ -408,7 +427,11 @@ export function openReview(root, { store, report, readonly, onShared, onError })
     }
     if (action === 'download') {
       button.disabled = true;
-      try { validAnnotations(marks, doc.pdf.numPages); await downloadReview(doc, structuredClone(marks), report.file_name); }
+      try {
+        if (!readonly) dropEmpty();
+        const copy = structuredClone(marks).map(m => ({ ...m, text: m.text.trim() }));
+        validAnnotations(copy, doc.pdf.numPages); await downloadReview(doc, copy, report.file_name);
+      }
       catch (error) { onError(error); }
       finally { if (!disposed) button.disabled = false; }
     }
@@ -417,7 +440,10 @@ export function openReview(root, { store, report, readonly, onShared, onError })
   root.querySelector('#pdf-zoom').addEventListener('change', event => { zoom = Number(event.target.value); void renderPage(); });
   root.querySelector('#pdf-note-form')?.addEventListener('submit', event => {
     event.preventDefault(); const mark = marks.find(m => m.id === selected); if (!mark || saving) return;
-    mark.text = root.querySelector('#pdf-note').value.trim(); feedback();
+    mark.text = root.querySelector('#pdf-note').value.trim();
+    // Saving finishes editing this mark: close the box so the saved text does not look like a new comment.
+    selected = null; root.querySelector('#pdf-note-form').hidden = true; dropEmpty(); feedback();
+    root.querySelector('#pdf-save-status').textContent = 'Comment saved. Select Share PDF feedback to send it to the student.';
   });
   root.querySelector('#pdf-note')?.addEventListener('input', () => { const m = marks.find(m => m.id === selected); if (m && !saving) { m.text = root.querySelector('#pdf-note').value; root.querySelector('#pdf-save-status').textContent = 'Unshared changes.'; } });
   const resize = new ResizeObserver(() => { if (doc) void renderPage(); }); resize.observe(root.querySelector('.pdf-stage'));
@@ -438,11 +464,37 @@ export function openReview(root, { store, report, readonly, onShared, onError })
     dispose: () => { disposed = true; abort.abort(); rendering?.cancel(); resize.disconnect(); window.removeEventListener('beforeunload', unload); if (doc) void doc.dispose(); }
   };
 }
+// Fit text to a standard PDF font: characters it cannot draw (e.g. Cyrillic) become "?". The note
+// annotation keeps the full text; this only affects the printed summary.
+function printable(text, font) {
+  const supported = new Set(font.getCharacterSet());
+  return [...text.replace(/\r\n?/g, '\n')].map(c => c === '\n' || supported.has(c.codePointAt(0)) ? c : '?').join('');
+}
+function wrap(text, font, size, width) {
+  const lines = [];
+  for (const paragraph of text.split('\n')) {
+    let line = '';
+    for (let word of paragraph.split(/\s+/).filter(Boolean)) {
+      // Break words longer than a line, such as URLs.
+      while (font.widthOfTextAtSize(word, size) > width) {
+        let cut = word.length - 1; while (cut > 1 && font.widthOfTextAtSize(word.slice(0, cut), size) > width) cut--;
+        if (line) { lines.push(line); line = ''; }
+        lines.push(word.slice(0, cut)); word = word.slice(cut);
+      }
+      const next = line ? `${line} ${word}` : word;
+      if (font.widthOfTextAtSize(next, size) > width) { lines.push(line); line = word; } else line = next;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
 async function downloadReview(doc, marks, name) {
   const { pdfLib } = await libs();
-  const { PDFDocument, PDFName, PDFHexString, PDFArray, rgb } = pdfLib;
-  const pdf = await PDFDocument.load(doc.bytes); const pages = pdf.getPages();
-  for (const mark of marks) {
+  const { PDFDocument, PDFName, PDFHexString, PDFArray, StandardFonts, rgb } = pdfLib;
+  const pdf = await PDFDocument.load(doc.bytes), pages = pdf.getPages();
+  const font = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const teal = rgb(0.06, 0.46, 0.43);
+  for (const [index, mark] of marks.entries()) {
     const page = pages[mark.page - 1], source = await doc.pdf.getPage(mark.page);
     const viewport = source.getViewport({ scale: 1 });
     const point = (x, y) => viewport.convertToPdfPoint(x * viewport.width, y * viewport.height);
@@ -450,11 +502,35 @@ async function downloadReview(doc, marks, name) {
     const rect = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
     if (mark.type === 'highlight') page.drawRectangle({ x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1], color: rgb(1, .84, .15), opacity: .3 });
     if (mark.text) {
+      // A numbered marker printed on the page, matching the summary page, so every viewer shows it.
+      const label = String(index + 1), size = 9, box = page.getMediaBox();
+      const cx = Math.min(Math.max(a[0], box.x + 10), box.x + box.width - 10), cy = Math.min(Math.max(a[1], box.y + 10), box.y + box.height - 10);
+      page.drawCircle({ x: cx, y: cy, size: 9, color: teal });
+      page.drawText(label, { x: cx - bold.widthOfTextAtSize(label, size) / 2, y: cy - size * .35, size, font: bold, color: rgb(1, 1, 1) });
+      // The note annotation also opens as a comment in viewers that support them (Acrobat, Preview).
       const note = pdf.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [a[0], a[1] - 20, a[0] + 20, a[1]],
         Contents: PDFHexString.fromText(mark.text), T: PDFHexString.fromText('Supervisor feedback'), Name: 'Comment', C: [0.06, 0.46, 0.43], F: 4 });
+      // Most pages have no annotation list yet; lookup() would throw, lookupMaybe() returns undefined.
       let annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
       if (!annots) { annots = pdf.context.obj([]); page.node.set(PDFName.of('Annots'), annots); }
       annots.push(pdf.context.register(note));
+    }
+  }
+  if (marks.length) {
+    // Summary pages: every comment in full, numbered like the markers on the PDF.
+    const [width, height] = [595.28, 841.89], margin = 56, textWidth = width - 2 * margin;
+    let page = pdf.addPage([width, height]), y = height - margin;
+    const line = (text, options) => {
+      if (y < margin + options.size) { page = pdf.addPage([width, height]); y = height - margin; }
+      page.drawText(text, { x: margin + (options.indent || 0), y, ...options }); y -= options.size * 1.45;
+    };
+    line('Supervisor feedback', { size: 18, font: bold, color: teal }); y -= 4;
+    for (const text of wrap(printable(name || 'submission.pdf', font), font, 10, textWidth)) line(text, { size: 10, font, color: rgb(.35, .4, .45) });
+    y -= 10;
+    for (const [index, mark] of marks.entries()) {
+      line(`${index + 1}  ·  Page ${mark.page}  ·  ${mark.type === 'highlight' ? 'Highlight' : 'Comment'}`, { size: 11, font: bold, color: teal });
+      for (const text of wrap(printable(mark.text || 'Highlighted region (no comment)', font), font, 11, textWidth - 14)) line(text, { size: 11, font, indent: 14 });
+      y -= 8;
     }
   }
   const bytes = await pdf.save(); const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));

@@ -1,5 +1,5 @@
 import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js';
-import { BackendSession } from './thesis-backend.js';
+import { BackendSession } from './thesis-backend.js?v=2026-10-10-notify';
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -85,6 +85,8 @@ export class SupabaseStore {
       ...(this.backend ? { global: { fetch: this.backend.fetch.bind(this.backend) } } : {})
     });
   }
+  // Optional call: a browser may still have an older cached thesis-backend.js for a few minutes after a release.
+  reportError(details) { this.backend?.reportError?.(details); }
   async currentUser() {
     if (this.backend) { this.user = await this.backend.session(); return this.user; }
     const { data: session } = await this.client.auth.getSession();
@@ -315,6 +317,7 @@ async function demoFile(operation, path, file) {
 }
 export class DemoStore {
   constructor() { this.mode = 'demo'; }
+  reportError() { /* Demo data never leaves the browser. */ }
   async init() {
     if (localStorage.getItem(DEMO_KEY)) return;
     const profiles = [];

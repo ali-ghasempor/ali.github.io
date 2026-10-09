@@ -246,6 +246,8 @@ dialog.pdf-dialog { width: 1200px; }
 .pdf-feedback h3 { margin-top: 0; }
 .pdf-mark { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .pdf-mark p { margin: 6px 0; font-size: 16px; }
+.pdf-mark.selected { background: var(--soft); margin: 0 -10px; padding: 12px 10px; border-radius: 8px; }
+.pdf-mark .badge { margin-left: 6px; padding: 2px 8px; font-size: 12px; }
 .pdf-feedback > .primary { margin-top: 18px; }
 .pdf-feedback .field { margin: 16px 0; }
 .diff-summary { padding: 16px; background: var(--soft); border-radius: 8px; }
