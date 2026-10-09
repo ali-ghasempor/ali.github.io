@@ -187,9 +187,19 @@ export class SupabaseStore {
       if (!result?.ok || result.version !== '2026-10-07') throw new Error('Deploy the current thesis-accounts/index.ts (release 2026-10-07).');
       return `Function deployed: ${result.version}.`;
     } });
+    checks.push({ label: 'Sign-in protection', run: async () => {
+      const blocks = await this.loginBlocks();
+      return blocks.length ? `${blocks.length} sign-in block(s) active. Review them under Sign-in protection.` : 'Repeated wrong passwords are limited. No sign-ins are blocked.';
+    } });
     return Promise.all(checks.map(async check => { try { return { label: check.label, ok: true, detail: await check.run() }; }
       catch (error) { return { label: check.label, ok: false, detail: error.message }; } }));
   }
+  async loginBlocks() {
+    const { data, error } = await this.client.rpc('thesis_login_blocks');
+    if (error?.code === 'PGRST202' || error?.message === 'API operation not allowed') throw new Error('Sign-in protection needs its update. Run supabase/login-protection-update.sql and redeploy thesis-api.');
+    fail(error); return data || [];
+  }
+  async unblockLogin(values) { const { error } = await this.client.rpc('thesis_unblock_login', values); fail(error); }
   async submitReport(values, file) {
     await validatePDF(file);
     const id = uuid(); const path = `${this.user.id}/${id}.pdf`;
@@ -407,6 +417,9 @@ export class DemoStore {
     }
     return { ok: true, configured: true, demo: true, counts: { pending: 0, processing: 0, error: 0, accepted: 0 } };
   }
+  // The local demo has no sign-in limiter, so there is never anything to unblock.
+  async loginBlocks() { this.requireSupervisor(); return []; }
+  async unblockLogin() { this.requireSupervisor(); }
   async submitReport(v, file) {
     if (this.user.role !== 'student') throw new Error('Student account required.'); await validatePDF(file);
     const d = this.read(); const id = uuid(); const path = `${this.user.id}/${id}.pdf`;
