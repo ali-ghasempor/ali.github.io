@@ -60,8 +60,6 @@ small, .small { font-size: 14px; line-height: 1.6; }
 .badge.green { background: #e4f3ec; color: var(--green); }
 .badge.amber { background: #fff1d9; color: var(--amber); }
 .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; font-size: 17px; font-weight: 700; color: inherit; }
-.brand small { display: block; font-size: 12px; color: #bccedb; margin-top: 3px; font-weight: 500; }
-.brand-mark { display: grid; place-items: center; flex-shrink: 0; width: 42px; height: 42px; border: 1px solid #8198a9; border-radius: 10px; font-size: 23px; }
 .avatar { width: 42px; height: 42px; flex-shrink: 0; border-radius: 10px; background: #ffffff15; display: grid; place-items: center; font-size: 14px; font-weight: 700; }
 .avatar.soft { background: #e8f1f4; color: #305b6d; }
 .arrow { color: var(--muted); font-size: 23px; }
@@ -76,6 +74,33 @@ small, .small { font-size: 14px; line-height: 1.6; }
 .login-card input { min-height: 52px; }
 .login-card .primary { min-height: 52px; margin-top: 2px; }
 .login-help { margin: 22px 0 0; font-size: 15px; color: var(--muted); }
+.login-guide { margin: 10px 0 0; }
+.login-guide a { display: inline-flex; align-items: center; min-height: 44px; font-size: 16px; font-weight: 650; }
+
+.guide-page { max-width: 900px; margin: auto; padding: 28px 24px 48px; }
+.guide-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+.guide-page h1 { font-size: 32px; margin-bottom: 12px; }
+.guide-page .panel { padding: 28px; }
+.guide-page h2 { margin-bottom: 16px; }
+.guide-page p:last-child, .guide-page ol:last-child { margin-bottom: 0; }
+.guide-page li { margin-bottom: 12px; }
+.guide-page ol, .guide-page ul { padding-left: 24px; }
+.guide-contents { margin-bottom: 24px; }
+.guide-contents a { display: inline-block; padding: 5px 0; }
+.guide-page section { scroll-margin-top: 24px; }
+@media (max-width: 480px) {
+  .guide-page { padding: 20px 12px 32px; }
+  .guide-page .panel { padding: 22px 20px; }
+  .guide-page h1 { font-size: 28px; }
+}
+@media print {
+  .guide-page { max-width: none; padding: 0; font-size: 11pt; background: white; }
+  .guide-header, .guide-contents { display: none; }
+  .guide-page .panel { border: 0; padding: 0; margin-bottom: 22px; }
+  .guide-page h2 { break-after: avoid; }
+  .guide-page li { break-inside: avoid; }
+  .guide-page a { color: inherit; }
+}
 
 .workspace { display: flex; min-height: 100vh; }
 .sidebar { width: 260px; flex-shrink: 0; background: var(--nav); color: #e0eaf0; padding: 28px 18px 22px; display: flex; flex-direction: column; position: fixed; inset: 0 auto 0 0; overflow-y: auto; }
@@ -293,8 +318,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 26px 0; }
 @media (max-width: 480px) {
   .login-layout { padding: 20px; }
   .login-card { padding: 26px 24px; }
-  .sidebar { padding: 14px 16px; flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
-  .sidebar > .brand > span:last-child { display: none; }
+  .sidebar { padding: 14px 16px; flex-direction: column; align-items: stretch; gap: 12px; }
   .sidebar-bottom { margin: 0; flex: 1; min-width: 0; }
   .user-card { gap: 8px; }
   .user-card .avatar { display: none; }

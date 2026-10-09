@@ -77,6 +77,7 @@ function renderLogin() {
       <button class="primary full" type="submit" ${!store ? 'disabled' : ''}>Sign in</button>
     </form>
     <p class="login-help">Forgot your password? Ask your supervisor for a reset.</p>
+    <p class="login-guide"><a href="student-guide.html">Usage guide</a></p>
   </div></main>`;
 }
 function render() {
@@ -86,7 +87,7 @@ function render() {
   const currentLabel = nav.find(([key])=>key===view)?.[1];
   const title = view==='settings' ? (supervisor?'Workspace settings':'Your account') : currentLabel;
   const pageActions = view==='students'?'<button class="secondary" data-action="import-students">Import students</button><button class="primary" data-action="add-student">+ Add student</button>':view==='progress'&&!supervisor?'<button class="primary" data-action="new-report">+ Share progress</button>':view==='meetings'&&supervisor?'<button class="primary" data-action="availability">+ Add availability</button>':'';
-  app.innerHTML = `<div class="workspace"><aside class="sidebar"><a class="brand" href="index.html"><span class="brand-mark">A</span><span>Thesis workspace<small>ALI GHASEMPOUR</small></span></a>
+  app.innerHTML = `<div class="workspace"><aside class="sidebar"><a class="brand" href="index.html">Thesis workspace</a>
     <div class="sidebar-label">${supervisor ? 'SUPERVISION' : 'MY THESIS'}</div><nav class="${supervisor?'nav-supervisor':'nav-student'}" aria-label="Workspace">${nav.map(([key,label]) => `<button class="nav-item ${view===key?'active':''}" data-action="view" data-view="${key}" ${view===key?'aria-current="page"':''}>${icon(key)}<span class="nav-label">${label}</span>${key==='progress' && supervisor && data.reports.some(r=>!r.dismissed_at&&!hasFeedback(r)) ? '<i class="nav-dot" aria-hidden="true"></i>' : ''}</button>`).join('')}</nav>
     <div class="sidebar-bottom"><a href="index.html">← Personal website</a><div class="user-card"><span class="avatar">${e(initials(user.full_name))}</span><div><strong>${e(user.full_name)}</strong><small>${supervisor?'Supervisor':'Student'}</small></div><button class="icon-button" data-action="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button></div></div></aside>
     <main class="main"><header class="topbar"><strong>${e(currentLabel)}</strong><div>${badge(store.mode==='demo'?'Local demo':'Signed in',store.mode==='demo'?'amber':'green')}<button class="icon-button" data-action="refresh" aria-label="Refresh workspace">${icon('refresh')}</button></div></header>
