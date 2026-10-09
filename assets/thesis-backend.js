@@ -4,7 +4,12 @@ export class BackendSession {
     const endpoint = new URL(config.backend);
     if (endpoint.origin !== new URL(config.url).origin || endpoint.pathname !== '/functions/v1/thesis-api' || endpoint.search || endpoint.hash)
       throw new Error('The workspace backend URL is invalid.');
-    this.endpoint = endpoint.href;
+    this.direct = endpoint.href;
+    // On the published site the gateway is also served from the site's own address (/api/thesis), which
+    // makes the session cookie first-party: iOS home-screen apps and stricter browsers block cross-site cookies.
+    const site = config.siteBackend ? new URL(config.siteBackend) : null;
+    this.site = site && site.origin === globalThis.location?.origin && site.pathname === '/api/thesis' && !site.search && !site.hash ? site.href : null;
+    this.endpoint = this.site || this.direct;
     this.project = new URL(config.url).origin;
     this.publishableKey = config.key;
     this.expiresAt = 0;
@@ -13,7 +18,14 @@ export class BackendSession {
     const headers = new Headers(options.headers);
     headers.set('X-Thesis-Request', '1');
     headers.set('apikey', this.publishableKey);
-    return fetch(this.endpoint + path, { ...options, headers, credentials: 'include', cache: 'no-store', redirect: 'error' });
+    const send = () => fetch(this.endpoint + path, { ...options, headers, credentials: 'include', cache: 'no-store', redirect: 'error' });
+    const response = await send();
+    // Until the site gateway is deployed, GitHub Pages answers /api/thesis with its HTML 404 page.
+    // Fall back to the direct address for the rest of this page load (the gateway itself always answers JSON).
+    if (this.endpoint === this.site && [404, 405].includes(response.status) && !(response.headers.get('content-type') || '').includes('json')) {
+      await response.body?.cancel(); this.endpoint = this.direct; return send();
+    }
+    return response;
   }
   async json(path, values) {
     const response = await this.request(path, values === undefined ? {} : {

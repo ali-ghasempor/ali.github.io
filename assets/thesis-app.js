@@ -1,4 +1,4 @@
-import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-10-notify';
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-10-gateway';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -233,7 +233,7 @@ async function pdfDialog(id, compare = false) {
   modal.classList.add('pdf-dialog');
   const root = modal.querySelector('#pdf-workspace');
   try {
-    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-10-notify');
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-10-gateway');
     if (!root.isConnected || !modal.open) return;
     pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports }) : openReview(root, {
       store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),

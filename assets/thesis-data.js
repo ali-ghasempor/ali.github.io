@@ -1,5 +1,5 @@
-import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js';
-import { BackendSession } from './thesis-backend.js?v=2026-10-10-notify';
+import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js?v=2026-10-10-gateway';
+import { BackendSession } from './thesis-backend.js?v=2026-10-10-gateway';
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -46,7 +46,8 @@ export function getConnection() {
     catch { /* Fall back to the website's public configuration. */ }
   }
   return { ...validateConnection(PUBLIC_SUPABASE_CONFIG.url, PUBLIC_SUPABASE_CONFIG.key),
-    ...(PUBLIC_SUPABASE_CONFIG.backend ? { backend: PUBLIC_SUPABASE_CONFIG.backend } : {}) };
+    ...(PUBLIC_SUPABASE_CONFIG.backend ? { backend: PUBLIC_SUPABASE_CONFIG.backend } : {}),
+    ...(PUBLIC_SUPABASE_CONFIG.siteBackend ? { siteBackend: PUBLIC_SUPABASE_CONFIG.siteBackend } : {}) };
 }
 export function validateConnection(url, key) {
   const parsed = new URL(url.trim());
