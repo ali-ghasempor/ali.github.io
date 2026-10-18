@@ -1,9 +1,13 @@
 // Shared by the browser download and the private Windows backup tool. No credentials here.
 export const BACKUP_VERSION = 1;
-export const WORKSPACE_TABLES = ['profiles', 'reports', 'comments', 'tasks', 'slots', 'reviews'];
+export const WORKSPACE_TABLES = ['profiles', 'reports', 'comments', 'tasks', 'slots', 'reviews', 'notes', 'signed'];
+// Added on 2026-10-18 (signed-documents-notes-update.sql): empty when the database or an older archive lacks them.
+export const OPTIONAL_TABLES = ['notes', 'signed'];
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
-const tableName = name => name === 'reviews' ? 'thesis_pdf_reviews' : `thesis_${name}`;
+const tableName = name => ({ reviews: 'thesis_pdf_reviews', signed: 'thesis_signed_versions' })[name] || `thesis_${name}`;
 export { tableName };
+// Private student notes never go into the supervisor's backups: only notes the student shared.
+export const sharedNotesOnly = name => name === 'notes';
 const json = value => encoder.encode(JSON.stringify(value, null, 2) + '\n');
 const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
@@ -22,6 +26,7 @@ function indexRows(rows, field = 'id') {
   return new Set(keys);
 }
 export function validateWorkspace(workspace, files) {
+  for (const name of OPTIONAL_TABLES) workspace[name] ??= [];
   const profiles = indexRows(workspace.profiles), reports = indexRows(workspace.reports);
   for (const name of WORKSPACE_TABLES) indexRows(workspace[name], name === 'reviews' ? 'report_id' : 'id');
   const objects = new Map();
@@ -40,6 +45,15 @@ export function validateWorkspace(workspace, files) {
   for (const row of workspace.slots) if (row.booked_by && !profiles.has(row.booked_by)) throw new Error('A meeting has a missing student profile.');
   for (const row of workspace.reviews) {
     if (!reports.has(row.report_id) || !profiles.has(row.reviewer_id) || !Array.isArray(row.annotations) || !workspace.reports.find(r => r.id === row.report_id)?.file_path) throw new Error('PDF feedback is incomplete.');
+  }
+  for (const row of workspace.notes) {
+    if (!profiles.has(row.student_id)) throw new Error('A note has no student profile.');
+    if (row.shared !== true) throw new Error('A private student note reached the backup. Backup stopped.');
+  }
+  for (const row of workspace.signed) {
+    if (!reports.has(row.report_id) || !profiles.has(row.uploaded_by)) throw new Error('A signed document version has a missing record reference.');
+    if (!objects.has(row.file_path) || !Number.isSafeInteger(row.file_size) || row.file_size < 1) throw new Error('A signed document version is missing from storage. Backup stopped.');
+    if (objects.get(row.file_path).size !== null && objects.get(row.file_path).size !== row.file_size) throw new Error('A signed document size does not match its record. Backup stopped.');
   }
 }
 export function assertUnchanged(before, after) {
@@ -91,14 +105,16 @@ function readableIndex(workspace, manifest) {
   const date = value => value ? escape(value) : '—';
   const sections = workspace.profiles.filter(p => p.role === 'student').map(person => {
     const reports = workspace.reports.filter(r => r.student_id === person.id).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    return `<section><h2>${escape(person.full_name)} ${person.active ? '' : '(archived)'}</h2><p>@${escape(person.username)} · ${escape(person.contact_email || '')}</p><p>${escape(person.thesis_title)} · Expected defence: ${date(person.defence_date)}</p>${reports.map(report => `<article><h3>${escape(report.title)}</h3><p>${date(report.created_at)} · ${escape(report.kind)} · ${escape(report.document_type || '')}</p><p class="text">${escape(report.body)}</p>${report.file_path ? `<p><a href="files/${escape(report.file_path)}">${escape(report.file_name || 'Original PDF')}</a></p>` : ''}${report.share_url ? `<p>${httpsLink(report.share_url, 'External shared document (not copied)')}</p>` : ''}${workspace.comments.filter(c => c.report_id === report.id).map(c => `<blockquote><strong>${escape(people.get(c.author_id)?.full_name)}</strong> · ${date(c.created_at)}<p class="text">${escape(c.body)}</p></blockquote>`).join('')}${workspace.reviews.filter(r => r.report_id === report.id).map(review => `<h4>PDF feedback · revision ${escape(review.revision)}</h4><ol>${review.annotations.map(mark => `<li>Page ${escape(mark.page)} · ${escape(mark.type)}<p class="text">${escape(mark.text || '(highlight)')}</p></li>`).join('')}</ol><p>The exact highlight positions are preserved in records/thesis_pdf_reviews.json.</p>`).join('')}</article>`).join('') || '<p>No progress submissions.</p>'}<h3>Next steps</h3><ul>${workspace.tasks.filter(t => t.student_id === person.id).map(t => `<li>${escape(t.title)} · ${t.completed ? 'Completed' : 'Open'} · Due: ${date(t.due_date)}</li>`).join('')}</ul><h3>Meetings (UTC timestamps)</h3>${workspace.slots.filter(s => s.booked_by === person.id).map(s => `<article><p>${date(s.starts_at)} – ${date(s.ends_at)} · ${escape(s.location)}</p><p class="text">${escape(s.agenda)}</p><p class="text">${escape(s.meeting_notes)}</p>${httpsLink(s.teams_join_url, 'Teams meeting')}</article>`).join('')}</section>`;
+    return `<section><h2>${escape(person.full_name)} ${person.active ? '' : '(archived)'}</h2><p>@${escape(person.username)} · ${escape(person.contact_email || '')}</p><p>${escape(person.thesis_title)} · Expected defence: ${date(person.defence_date)}</p>${reports.map(report => `<article><h3>${escape(report.title)}</h3><p>${date(report.created_at)} · ${escape(report.kind)} · ${escape(report.document_type || '')}</p><p class="text">${escape(report.body)}</p>${report.file_path ? `<p><a href="files/${escape(report.file_path)}">${escape(report.file_name || 'Original PDF')}</a></p>` : ''}${(workspace.signed || []).filter(v => v.report_id === report.id).map(v => `<p>Signed version: <a href="files/${escape(v.file_path)}">${escape(v.file_name)}</a> · ${escape(people.get(v.uploaded_by)?.full_name)} · ${date(v.created_at)}</p>`).join('')}${report.share_url ? `<p>${httpsLink(report.share_url, 'External shared document (not copied)')}</p>` : ''}${workspace.comments.filter(c => c.report_id === report.id).map(c => `<blockquote><strong>${escape(people.get(c.author_id)?.full_name)}</strong> · ${date(c.created_at)}<p class="text">${escape(c.body)}</p></blockquote>`).join('')}${workspace.reviews.filter(r => r.report_id === report.id).map(review => `<h4>PDF feedback · revision ${escape(review.revision)}</h4><ol>${review.annotations.map(mark => `<li>Page ${escape(mark.page)} · ${escape(mark.type)}<p class="text">${escape(mark.text || '(highlight)')}</p></li>`).join('')}</ol><p>The exact highlight positions are preserved in records/thesis_pdf_reviews.json.</p>`).join('')}</article>`).join('') || '<p>No progress submissions.</p>'}<h3>Shared notes</h3>${(workspace.notes || []).filter(n => n.student_id === person.id).map(n => `<article><p><strong>${escape(n.title || 'Note')}</strong> · ${date(n.updated_at)}</p><p class="text">${escape(n.body)}</p></article>`).join('') || '<p>No shared notes. Private notes are not included in backups.</p>'}<h3>Next steps</h3><ul>${workspace.tasks.filter(t => t.student_id === person.id).map(t => `<li>${escape(t.title)} · ${t.completed ? 'Completed' : 'Open'} · Due: ${date(t.due_date)}</li>`).join('')}</ul><h3>Meetings (UTC timestamps)</h3>${workspace.slots.filter(s => s.booked_by === person.id).map(s => `<article><p>${date(s.starts_at)} – ${date(s.ends_at)} · ${escape(s.location)}</p><p class="text">${escape(s.agenda)}</p><p class="text">${escape(s.meeting_notes)}</p>${httpsLink(s.teams_join_url, 'Teams meeting')}</article>`).join('')}</section>`;
   }).join('');
-  return encoder.encode(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>Thesis workspace backup</title><style>body{font:17px/1.6 system-ui,sans-serif;color:#182b38;max-width:1000px;margin:32px auto;padding:0 20px}section{border-top:3px solid #187a74;margin-top:40px}article{border:1px solid #bac8ce;border-radius:8px;padding:20px;margin:20px 0}a{color:#075e58}.text{white-space:pre-wrap;overflow-wrap:anywhere}blockquote{border-left:3px solid #bac8ce;padding-left:16px;margin-left:0}</style><h1>Thesis workspace backup</h1><p>Created ${escape(manifest.started_at)}. Private student records; keep this archive securely.</p><p>Extract the ZIP first, then open this index. PDFs are original uploads. PDF feedback is listed below and its full coordinates remain in JSON. External sharing links are not file copies.</p><p>${workspace.profiles.length} profiles · ${workspace.reports.length} submissions · ${workspace.reviews.length} PDF reviews · ${manifest.storage.length} stored files.</p>${sections}<h2>All meeting availability</h2><ul>${workspace.slots.filter(s => !s.booked_by).map(s => `<li>${date(s.starts_at)} – ${date(s.ends_at)} · ${escape(s.location)}</li>`).join('')}</ul><p>All database fields are in workspace.json and records/. Account passwords, active sessions, deployed secrets, and external Microsoft 365/Drive contents are excluded. This is a workspace content archive, not a complete Supabase server image.</p></html>`);
+  return encoder.encode(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><title>Thesis workspace backup</title><style>body{font:17px/1.6 system-ui,sans-serif;color:#182b38;max-width:1000px;margin:32px auto;padding:0 20px}section{border-top:3px solid #187a74;margin-top:40px}article{border:1px solid #bac8ce;border-radius:8px;padding:20px;margin:20px 0}a{color:#075e58}.text{white-space:pre-wrap;overflow-wrap:anywhere}blockquote{border-left:3px solid #bac8ce;padding-left:16px;margin-left:0}</style><h1>Thesis workspace backup</h1><p>Created ${escape(manifest.started_at)}. Private student records; keep this archive securely.</p><p>Extract the ZIP first, then open this index. Files are original uploads: PDFs and signed .asice containers (check signatures with DigiDoc4). PDF feedback is listed below and its full coordinates remain in JSON. External sharing links are not file copies.</p><p>${workspace.profiles.length} profiles · ${workspace.reports.length} submissions · ${workspace.reviews.length} PDF reviews · ${manifest.storage.length} stored files.</p>${sections}<h2>All meeting availability</h2><ul>${workspace.slots.filter(s => !s.booked_by).map(s => `<li>${date(s.starts_at)} – ${date(s.ends_at)} · ${escape(s.location)}</li>`).join('')}</ul><p>All database fields are in workspace.json and records/. Account passwords, active sessions, deployed secrets, and external Microsoft 365/Drive contents are excluded. This is a workspace content archive, not a complete Supabase server image.</p></html>`);
 }
+// Sources from before the optional tables existed return no key for them; treat that as empty.
+const complete = snapshot => ({ ...snapshot, workspace: { ...Object.fromEntries(OPTIONAL_TABLES.map(name => [name, []])), ...snapshot.workspace } });
 export async function createWorkspaceArchive(source, zip, progress = () => {}) {
   const started_at = new Date().toISOString();
   progress('Reading all workspace records and PDF inventory…');
-  const snapshot = await source.snapshot(); validateWorkspace(snapshot.workspace, snapshot.files);
+  const snapshot = complete(await source.snapshot()); validateWorkspace(snapshot.workspace, snapshot.files);
   const manifest = { format: 'thesis-workspace-backup', version: BACKUP_VERSION, started_at, finished_at: null,
     mode: source.mode, project: source.project || null, verification: 'ZIP is reread and checked before release; see download result or the adjacent verification report.', counts: Object.fromEntries(WORKSPACE_TABLES.map(n => [n, snapshot.workspace[n].length])),
     storage: [], entries: [], exclusions: ['Account passwords and active sessions', 'Deployed backend/Vault secrets', 'External Drive files', 'Microsoft 365 calendars, email and flow definitions'],
@@ -111,12 +127,13 @@ export async function createWorkspaceArchive(source, zip, progress = () => {}) {
     const bytes = await source.file(file.path);
     if (file.size !== null && bytes.length !== file.size) throw new Error('A stored file is incomplete. Backup stopped.');
     for (const report of snapshot.workspace.reports.filter(r => r.file_path === file.path)) if (report.file_size !== bytes.length) throw new Error('An uploaded PDF is incomplete. Backup stopped.');
+    for (const version of snapshot.workspace.signed.filter(v => v.file_path === file.path)) if (version.file_size !== bytes.length) throw new Error('A signed document is incomplete. Backup stopped.');
     await add(`files/${file.path}`, bytes);
     manifest.storage.push({ ...file, archive_path: `files/${file.path}`, size: bytes.length });
   }
   if (source.extras) for await (const entry of source.extras()) await add(entry.path, entry.bytes);
   progress('Checking the workspace has not changed during download…');
-  assertUnchanged(snapshot, await source.snapshot());
+  assertUnchanged(snapshot, complete(await source.snapshot()));
   await add('index.html', readableIndex(snapshot.workspace, manifest));
   await add('README.txt', encoder.encode('PRIVATE WORKSPACE BACKUP\n\nExtract this ZIP and open index.html to read student progress offline.\nworkspace.json and records/ preserve all application fields and PDF annotations.\nfiles/ preserves every object in the thesis-files bucket, including unlinked objects.\nmanifest.json lists record counts, file sizes and SHA-256 checksums.\n\nThis is a content backup, not a complete Supabase disaster-recovery image.\nIt excludes account passwords, sessions, deployed secrets, external Drive files,\nand Microsoft 365 calendars/emails/flow definitions. Scheduled backups additionally\ninclude Auth account metadata, automation queue records and available local source.\nAuth metadata does NOT contain password hashes; recovered accounts need new passwords.\nA separate database dump and secret/configuration recovery kit are needed to preserve\nall authentication/database internals. Never replay automation queue jobs on recovery.\nNo restore operation is provided or performed by this backup tool.\n'));
   manifest.finished_at = new Date().toISOString();
@@ -155,6 +172,7 @@ export async function verifyArchive(size, read) {
   }
   const workspace = JSON.parse(decoder.decode(await bytesFor('workspace.json'))); validateWorkspace(workspace, manifest.storage);
   for (const name of WORKSPACE_TABLES) {
+    if (OPTIONAL_TABLES.includes(name) && !(name in manifest.counts)) continue; // Archive made before this table existed.
     if (workspace[name].length !== manifest.counts[name] || canonical(JSON.parse(decoder.decode(await bytesFor(`records/${tableName(name)}.json`)))) !== canonical(workspace[name])) throw new Error('Record counts or record contents do not match.');
   }
   const archived = [...entries.keys()].filter(path => path.startsWith('files/'));

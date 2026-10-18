@@ -1,5 +1,5 @@
-import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js?v=2026-10-10-gateway';
-import { BackendSession } from './thesis-backend.js?v=2026-10-10-gateway';
+import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js?v=2026-10-18-signed-notes';
+import { BackendSession } from './thesis-backend.js?v=2026-10-18-signed-notes';
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -30,6 +30,20 @@ export async function validatePDF(file) {
   if (!/\.pdf$/i.test(file.name)) throw new Error('Choose a PDF file.');
   const signature = new TextDecoder().decode(await file.slice(0, 5).arrayBuffer());
   if (signature !== '%PDF-') throw new Error('This file does not appear to be a valid PDF.');
+}
+export const ASICE_TYPE = 'application/vnd.etsi.asic-e+zip';
+// An .asice (DigiDoc) container is a ZIP whose first entry is an uncompressed "mimetype" file naming the
+// ASiC-E type. This catches renamed or wrong files; the signatures themselves are checked in DigiDoc4.
+export async function validateAsice(file) {
+  if (!file) throw new Error('Choose a signed .asice file.');
+  if (!file.size || file.size > MAX_PDF_BYTES) throw new Error('Signed documents must be no larger than 20 MB.');
+  if (!/\.asice$/i.test(file.name)) throw new Error('Choose a signed .asice file (a DigiDoc container).');
+  const head = new Uint8Array(await file.slice(0, 256).arrayBuffer()), v = new DataView(head.buffer);
+  const text = (start, length) => new TextDecoder().decode(head.slice(start, start + length));
+  const content = 30 + 8 + (head.length >= 30 ? v.getUint16(28, true) : 0);
+  if (head.length < content + ASICE_TYPE.length || v.getUint32(0, true) !== 0x04034b50 || v.getUint16(8, true) !== 0 ||
+    v.getUint16(26, true) !== 8 || text(30, 8) !== 'mimetype' || text(content, ASICE_TYPE.length) !== ASICE_TYPE)
+    throw new Error('This file is not a valid .asice container. Sign it with DigiDoc4 and try again.');
 }
 const uuid = () => crypto.randomUUID();
 const now = () => new Date().toISOString();
@@ -158,8 +172,17 @@ export class SupabaseStore {
       if (['42P01','PGRST205'].includes(result.error?.code)) break;
       fail(result.error); reviews.push(...result.data); if (result.data.length < 1000) break;
     }
-    return { ...Object.fromEntries(results), reviews };
-
+    // Tables from signed-documents-notes-update.sql: empty until that update is run.
+    const optional = async table => {
+      const rows = [];
+      for (let offset = 0; ; offset += 1000) {
+        const { data, error } = await this.client.from(table).select('*').order('id').range(offset, offset + 999);
+        if (['42P01','PGRST205'].includes(error?.code)) return [];
+        fail(error); rows.push(...data); if (data.length < 1000) break;
+      }
+      return rows;
+    };
+    return { ...Object.fromEntries(results), reviews, notes: await optional('thesis_notes'), signed: await optional('thesis_signed_versions') };
   }
   async account(action, values) {
     const { data, error } = await this.client.functions.invoke('thesis-accounts', { body: { action, ...values } });
@@ -204,20 +227,58 @@ export class SupabaseStore {
   }
   async unblockLogin(values) { const { error } = await this.client.rpc('thesis_unblock_login', values); fail(error); }
   async submitReport(values, file) {
-    await validatePDF(file);
-    const id = uuid(); const path = `${this.user.id}/${id}.pdf`;
-    const row = { ...values, id, student_id: this.user.id, share_url: httpsURL(values.share_url),
+    const signed = values.document_type === 'signed';
+    if (signed) await validateAsice(file); else await validatePDF(file);
+    const id = uuid(); const path = `${this.user.id}/${id}.${signed ? 'asice' : 'pdf'}`;
+    const row = { ...values, id, student_id: this.user.id, share_url: signed ? null : httpsURL(values.share_url),
       file_path: null, file_name: null, file_size: null };
     if (file) {
-      const { error } = await this.client.storage.from('thesis-files').upload(path, file, { contentType: 'application/pdf', upsert: false });
-      if (error) throw new Error(`PDF upload failed: ${error.message}. Your notes are still in this form; remove the file and add a sharing link instead.`);
+      const { error } = await this.client.storage.from('thesis-files').upload(path, file, { contentType: signed ? ASICE_TYPE : 'application/pdf', upsert: false });
+      if (error) throw new Error(signed ? `Signed document upload failed: ${error.message}. If this keeps happening, ask your supervisor to run the signed-documents update.`
+        : `PDF upload failed: ${error.message}. Your notes are still in this form; remove the file and add a sharing link instead.`);
       Object.assign(row, { file_path: path, file_name: file.name, file_size: file.size });
     }
     const { error } = await this.client.from('thesis_reports').insert(row);
     if (error && file) await this.client.storage.from('thesis-files').remove([path]);
     if (error?.code === 'PGRST204' || error?.code === '42703') throw new Error('Run supabase/pdf-review-update.sql before uploading categorized submissions.');
+    if (error?.code === '23514' && signed) throw new Error('Signed documents need the database update. Ask your supervisor to run supabase/signed-documents-notes-update.sql.');
     fail(error);
   }
+  // Uploads an .asice file, then records it with a checked database function; an unrecorded upload is removed.
+  async signedUpload(path, file, rpc, args) {
+    await validateAsice(file);
+    const upload = await this.client.storage.from('thesis-files').upload(path, file, { contentType: ASICE_TYPE, upsert: false });
+    if (upload.error?.message === 'API operation not allowed') throw new Error('Signed documents need the update. Redeploy thesis-api and run supabase/signed-documents-notes-update.sql.');
+    if (upload.error) throw new Error(`Signed document upload failed: ${upload.error.message}`);
+    const { error } = await this.client.rpc(rpc, args);
+    if (error) await this.client.storage.from('thesis-files').remove([path]);
+    if (error?.code === 'PGRST202' || error?.message === 'API operation not allowed') throw new Error('Signed documents need the update. Run supabase/signed-documents-notes-update.sql and redeploy thesis-api.');
+    fail(error);
+  }
+  async addSignedVersion(report, file) {
+    const version = uuid();
+    await this.signedUpload(`${report.student_id}/${report.id}/${version}.asice`, file, 'thesis_add_signed_version',
+      { target_report: report.id, version_id: version, version_file_name: file?.name, version_file_size: file?.size });
+  }
+  async createSignedDocument(student_id, title, body, file) {
+    const id = uuid();
+    await this.signedUpload(`${student_id}/${id}.asice`, file, 'thesis_create_signed_document',
+      { target_student: student_id, new_report: id, doc_title: title, doc_body: body, doc_file_name: file?.name, doc_file_size: file?.size });
+  }
+  async fileBlob(path) {
+    const url = await this.fileURL({ file_path: path });
+    const response = await fetch(url, { credentials: 'omit', cache: 'no-store', redirect: 'error' });
+    if (!response.ok) throw new Error('The file could not be downloaded. Try again.');
+    return response.blob();
+  }
+  async saveNote(note_id, title, body, shared) {
+    const { data, error } = await this.client.rpc('thesis_save_note', { note_id: note_id || null, note_title: title, note_body: body, note_shared: shared });
+    if (error?.code === 'PGRST202' || error?.message === 'API operation not allowed') throw new Error('Notes need the workspace update. Ask your supervisor to run supabase/signed-documents-notes-update.sql.');
+    fail(error); return data;
+  }
+  async deleteNote(note_id) { const { error } = await this.client.rpc('thesis_delete_note', { note_id }); fail(error); }
+  async updateMyTask(task_id, title, due_date) { const { error } = await this.client.rpc('thesis_update_my_task', { task_id, new_title: title, new_due_date: due_date || null }); fail(error); }
+  async deleteMyTask(task_id) { const { error } = await this.client.rpc('thesis_delete_my_task', { task_id }); fail(error); }
   async fileURL(report) {
     const { data, error } = await this.client.storage.from('thesis-files').createSignedUrl(report.file_path, 300); fail(error); return data.signedUrl;
   }
@@ -228,12 +289,15 @@ export class SupabaseStore {
   }
   async backupSnapshot() {
     if (this.user?.role !== 'supervisor' || !this.user.active) throw new Error('An active supervisor account is required.');
-    const { WORKSPACE_TABLES, tableName } = await import('./thesis-backup.js');
+    const { WORKSPACE_TABLES, OPTIONAL_TABLES, sharedNotesOnly, tableName } = await import('./thesis-backup.js?v=2026-10-18-signed-notes');
     const workspace = {};
     for (const name of WORKSPACE_TABLES) {
       const rows = []; let total = null;
       for (let offset = 0; ; ) {
-        const result = await this.client.from(tableName(name)).select('*', { count: 'exact' }).order(name === 'reviews' ? 'report_id' : 'id').range(offset, offset + 999).abortSignal(AbortSignal.timeout(60000));
+        let query = this.client.from(tableName(name)).select('*', { count: 'exact' });
+        if (sharedNotesOnly(name)) query = query.eq('shared', true);
+        const result = await query.order(name === 'reviews' ? 'report_id' : 'id').range(offset, offset + 999).abortSignal(AbortSignal.timeout(60000));
+        if (OPTIONAL_TABLES.includes(name) && ['42P01','PGRST205'].includes(result.error?.code)) break;
         fail(result.error);
         if (!Number.isSafeInteger(result.count) || !Array.isArray(result.data) || (total !== null && total !== result.count)) throw new Error('The database changed or could not supply a complete record count. Try the backup again.');
         total = result.count; rows.push(...result.data); offset += result.data.length;
@@ -329,16 +393,18 @@ export class DemoStore {
       body: 'I compared the main approaches to detection coverage and drafted the laboratory test plan. Next I will define the baseline and measurement criteria.',
       share_url: null, file_path: null, created_at: now() }], comments: [],
       tasks: [{ id: 'demo-task', student_id: 'demo-alex', created_by: 'demo-supervisor', title: 'Define the baseline and evaluation metrics', due_date: null, completed: false, created_at: now() }],
-      slots: [{ id: 'demo-slot', starts_at: start, ends_at: end, location: 'MS Teams', booked_by: null, agenda: '', meeting_notes: '' }] });
+      slots: [{ id: 'demo-slot', starts_at: start, ends_at: end, location: 'MS Teams', booked_by: null, agenda: '', meeting_notes: '' }], notes: [], signed: [] });
   }
-  read() { return JSON.parse(localStorage.getItem(DEMO_KEY)); }
+  // Demo data saved by older releases lacks the newer lists.
+  read() { const d = JSON.parse(localStorage.getItem(DEMO_KEY)); if (d) { d.notes ||= []; d.signed ||= []; d.reviews ||= []; } return d; }
   write(data) { localStorage.setItem(DEMO_KEY, JSON.stringify(data)); }
   requireSupervisor() { if (this.user?.role !== 'supervisor') throw new Error('Supervisor account required.'); }
   async backupSnapshot() {
     this.requireSupervisor(); const d = structuredClone(this.read());
     d.profiles = d.profiles.map(({ password_hash, salt, ...profile }) => profile);
-    const workspace = Object.fromEntries(['profiles', 'reports', 'comments', 'tasks', 'slots', 'reviews'].map(name => [name, d[name] || []]));
-    const files = workspace.reports.filter(r => r.file_path).map(r => ({ path: r.file_path, size: r.file_size, updated_at: null })).sort((a, b) => a.path.localeCompare(b.path));
+    d.notes = d.notes.filter(n => n.shared); // Private student notes are never part of a backup.
+    const workspace = Object.fromEntries(['profiles', 'reports', 'comments', 'tasks', 'slots', 'reviews', 'notes', 'signed'].map(name => [name, d[name] || []]));
+    const files = [...workspace.reports.filter(r => r.file_path), ...workspace.signed].map(r => ({ path: r.file_path, size: r.file_size, updated_at: null })).sort((a, b) => a.path.localeCompare(b.path));
     return { workspace, files };
   }
   async backupFile(path) {
@@ -387,13 +453,15 @@ export class DemoStore {
     this.write(d);
   }
   async load() {
-    const data = this.read(); if (this.user.role === 'supervisor') return data;
+    const data = this.read(); if (this.user.role === 'supervisor') return { ...data, notes: data.notes.filter(n => n.shared) };
     const reports = data.reports.filter(r => r.student_id === this.user.id);
     return { profiles: data.profiles.filter(p => p.id === this.user.id), reports,
       comments: data.comments.filter(c => reports.some(r => r.id === c.report_id)),
       reviews: (data.reviews || []).filter(c => reports.some(r => r.id === c.report_id)),
       tasks: data.tasks.filter(t => t.student_id === this.user.id),
-      slots: data.slots.filter(s => !s.booked_by || s.booked_by === this.user.id) };
+      slots: data.slots.filter(s => !s.booked_by || s.booked_by === this.user.id),
+      notes: data.notes.filter(n => n.student_id === this.user.id),
+      signed: data.signed.filter(v => reports.some(r => r.id === v.report_id)) };
   }
   async account(action, v) {
     this.requireSupervisor(); const d = this.read();
@@ -425,12 +493,46 @@ export class DemoStore {
   async loginBlocks() { this.requireSupervisor(); return []; }
   async unblockLogin() { this.requireSupervisor(); }
   async submitReport(v, file) {
-    if (this.user.role !== 'student') throw new Error('Student account required.'); await validatePDF(file);
-    const d = this.read(); const id = uuid(); const path = `${this.user.id}/${id}.pdf`;
+    if (this.user.role !== 'student') throw new Error('Student account required.');
+    const signed = v.document_type === 'signed';
+    if (signed) await validateAsice(file); else await validatePDF(file);
+    const d = this.read(); const id = uuid(); const path = `${this.user.id}/${id}.${signed ? 'asice' : 'pdf'}`;
     if (file) await demoFile('put', path, file);
-    d.reports.push({ ...v, id, student_id: this.user.id, share_url: httpsURL(v.share_url), file_path: file ? path : null,
-      file_name: file?.name || null, file_size: file?.size || null, created_at: now() }); this.write(d);
+    d.reports.push({ ...v, id, student_id: this.user.id, share_url: signed ? null : httpsURL(v.share_url), file_path: file ? path : null,
+      file_name: file?.name || null, file_size: file?.size || null, created_by: this.user.id, created_at: now() }); this.write(d);
   }
+  async addSignedVersion(report, file) {
+    await validateAsice(file);
+    const d = this.read(), r = d.reports.find(r => r.id === report.id);
+    if (!r || r.document_type !== 'signed' || !(this.user.role === 'supervisor' || r.student_id === this.user.id)) throw new Error('Signed document not found.');
+    const id = uuid(), path = `${r.student_id}/${r.id}/${id}.asice`;
+    await demoFile('put', path, file);
+    d.signed.push({ id, report_id: r.id, uploaded_by: this.user.id, file_path: path, file_name: file.name, file_size: file.size, created_at: now() }); this.write(d);
+  }
+  async createSignedDocument(student_id, title, body, file) {
+    this.requireSupervisor(); await validateAsice(file);
+    const d = this.read();
+    if (!d.profiles.some(p => p.id === student_id && p.role === 'student' && p.active)) throw new Error('Choose an active student.');
+    if (!title.trim() || body.trim().length < 10) throw new Error('Add a title and a note of at least 10 characters for the student.');
+    const id = uuid(), path = `${student_id}/${id}.asice`;
+    await demoFile('put', path, file);
+    d.reports.push({ id, student_id, title: title.trim(), kind: 'progress', document_type: 'signed', body: body.trim(), share_url: null,
+      file_path: path, file_name: file.name, file_size: file.size, created_by: this.user.id, created_at: now() }); this.write(d);
+  }
+  async fileBlob(path) { const file = await demoFile('get', path); if (!file) throw new Error('This demo file is not in this browser.'); return file; }
+  async saveNote(id, title, body, shared) {
+    if (this.user.role !== 'student') throw new Error('An active student account is required.');
+    if (!body.trim() || body.trim().length > 10000) throw new Error('Write a note of 1–10,000 characters.');
+    const d = this.read(), note = id ? d.notes.find(n => n.id === id && n.student_id === this.user.id) : null;
+    if (id && !note) throw new Error('Note not found.');
+    const values = { title: title.trim(), body: body.trim(), shared: Boolean(shared), updated_at: now() };
+    if (note) Object.assign(note, values); else d.notes.push({ id: uuid(), student_id: this.user.id, created_at: now(), ...values });
+    this.write(d);
+  }
+  async deleteNote(id) { const d = this.read(); const before = d.notes.length; d.notes = d.notes.filter(n => !(n.id === id && n.student_id === this.user.id)); if (d.notes.length === before) throw new Error('Note not found.'); this.write(d); }
+  ownTask(d, id) { const task = d.tasks.find(t => t.id === id && t.student_id === this.user.id && t.created_by === this.user.id); if (!task) throw new Error('You can only change next steps you added yourself.'); return task; }
+  async updateMyTask(id, title, due_date) { const d = this.read(); if (!title.trim()) throw new Error('Use a next step of 1–500 characters.'); Object.assign(this.ownTask(d, id), { title: title.trim(), due_date: due_date || null }); this.write(d); }
+  async deleteMyTask(id) { const d = this.read(); this.ownTask(d, id); d.tasks = d.tasks.filter(t => t.id !== id); this.write(d); }
   async fileURL(report) { const file = await demoFile('get', report.file_path); if (!file) throw new Error('This demo file is not in this browser.'); return URL.createObjectURL(file); }
   async pdfReview(report_id) {
     const d = await this.load();
@@ -447,7 +549,7 @@ export class DemoStore {
     this.write(d); return review;
   }
   async comment(report_id, body) { this.requireSupervisor(); const d = this.read(); d.comments.push({ id: uuid(), report_id, body, author_id: this.user.id, created_at: now() }); this.write(d); }
-  async task(student_id, title, due_date) { this.requireSupervisor(); const d = this.read(); d.tasks.push({ id: uuid(), student_id, title, due_date: due_date || null, created_by: this.user.id, completed: false, created_at: now() }); this.write(d); }
+  async task(student_id, title, due_date) { if (this.user?.role !== 'supervisor' && student_id !== this.user?.id) throw new Error('Students can add next steps only for themselves.'); const d = this.read(); d.tasks.push({ id: uuid(), student_id, title, due_date: due_date || null, created_by: this.user.id, completed: false, created_at: now() }); this.write(d); }
   async completeTask(id, completed) { const d = this.read(); const task = d.tasks.find(t => t.id === id && (t.student_id === this.user.id || this.user.role === 'supervisor')); if (!task) throw new Error('Task not found.'); task.completed = completed; this.write(d); }
   async createSlots(slots) {
     this.requireSupervisor(); const d = this.read();

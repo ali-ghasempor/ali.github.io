@@ -1,4 +1,4 @@
-import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, httpsURL } from './thesis-data.js?v=2026-10-10-gateway';
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, validateAsice, httpsURL } from './thesis-data.js?v=2026-10-18-signed-notes';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -8,7 +8,7 @@ const LOCAL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 const DEMO = LOCAL && new URLSearchParams(location.search).get('demo') === '1';
 const SETUP = LOCAL && new URLSearchParams(location.search).get('setup') === '1';
 let store, user, toastTimer, loading = false;
-let data = { profiles: [], reports: [], comments: [], tasks: [], slots: [] };
+let data = { profiles: [], reports: [], comments: [], tasks: [], slots: [], notes: [], signed: [] };
 let view = 'overview', studentFilter = '', showArchived = false;
 let studentImport = null, pdfSession = null, backupRunning = false;
 const uploadTypes = { notes: 'Research notes', data: 'Data', presentation: 'Presentation', findings: 'Findings and graphs', other: 'Other' };
@@ -31,7 +31,16 @@ const sortedReports = () => [...data.reports].sort((a, b) => b.created_at.locale
 const futureMeetings = () => data.slots.filter(s => s.booked_by && new Date(s.starts_at) > new Date()).sort((a, b) => a.starts_at.localeCompare(b.starts_at));
 const openTasks = () => data.tasks.filter(t => !t.completed);
 const pdfFeedback = id => (data.reviews || []).find(r => r.report_id === id);
-const hasFeedback = r => data.comments.some(c => c.report_id === r.id) || Boolean(pdfFeedback(r.id));
+const isSigned = r => r.document_type === 'signed';
+const isPdf = r => Boolean(r.file_path) && !isSigned(r);
+const docLabel = r => r.kind === 'thesis' ? 'Thesis draft' : isSigned(r) ? 'Signed document (.asice)' : 'Progress update · ' + (uploadTypes[r.document_type] || 'Other');
+const signedVersions = id => (data.signed || []).filter(v => v.report_id === id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+// Who uploaded a file: students cannot read the supervisor's profile, so the label comes from the document itself.
+const uploader = (id, report) => id === report.student_id ? (id === user.id ? 'You' : studentName(id)) : (id === user.id ? 'You' : 'Supervisor');
+const ownTask = t => t.created_by === t.student_id;
+// A signed document waits for the supervisor while the student signed last, and counts as answered once the supervisor did.
+const latestSigner = r => signedVersions(r.id).at(-1)?.uploaded_by || r.created_by || r.student_id;
+const hasFeedback = r => r.document_type === 'signed' ? latestSigner(r) !== r.student_id : data.comments.some(c => c.report_id === r.id) || Boolean(pdfFeedback(r.id));
 const icons = {
   overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   students: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M15 3.13a4 4 0 0 1 0 7.75"/><circle cx="9" cy="7" r="4"/>',
@@ -133,14 +142,19 @@ function overview() {
   return `<div class="metrics">${metric(supervisor?'Active students':'Progress updates',supervisor?data.profiles.filter(p=>p.role==='student'&&p.active).length:reports.length)}${metric('Upcoming meetings',upcoming.length)}${metric(supervisor?'Awaiting feedback':'Open next steps',supervisor?reports.filter(r=>!r.dismissed_at&&!hasFeedback(r)).length:openTasks().length,'accent')}${metric('Shared documents',reports.filter(r=>r.file_path||r.share_url).length)}</div>
     ${!supervisor?`<section class="thesis-card"><div><span class="eyebrow">YOUR THESIS</span><h2>${e(user.thesis_title || 'Your thesis title will appear here')}</h2><p>${user.defence_date?'Expected defence: '+e(defenceText(user.defence_date)):'Defence month to be agreed with your supervisor'}</p></div><button class="primary" data-action="new-report">Share progress →</button></section>`:''}
     <div class="overview-grid"><section class="panel"><div class="panel-heading"><h2>Latest progress</h2><div class="row">${supervisor&&latest.length?'<button class="text-button" data-action="dismiss-all" title="Keep the progress history and clear these updates from the overview">Dismiss all</button>':''}<button class="text-button" data-action="view" data-view="progress">View all →</button></div></div>${latest.length?latest.slice(0,4).map(r=>supervisor?`<div class="overview-report">${reportCard(r)}<button class="text-button" data-action="dismiss-report" data-id="${e(r.id)}" aria-label="Dismiss ${e(r.title)} from overview">Dismiss from overview</button></div>`:reportCard(r)).join(''):empty('All caught up',supervisor?'New progress updates will appear here. Dismissed updates stay in Progress & files.':'Progress updates will appear here when you share your work.')}</section>
-    <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2></div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
+    <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2>${!supervisor?'<button class="text-button" data-action="new-task">+ Add</button>':''}</div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
 }
 function reportCard(r) {
-  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(isSupervisor()&&r.dismissed_at?'Dismissed from overview':hasFeedback(r)?'Feedback added':'Awaiting feedback',r.dismissed_at&&isSupervisor()?'':hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${r.kind==='thesis'?'Thesis draft':'Progress update · '+e(uploadTypes[r.document_type]||'Other')}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
+  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(isSupervisor()&&r.dismissed_at?'Dismissed from overview':isSigned(r)?(hasFeedback(r)?'Signed by supervisor':'Awaiting supervisor signature'):hasFeedback(r)?'Feedback added':'Awaiting feedback',r.dismissed_at&&isSupervisor()?'':hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${e(docLabel(r))}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${isSigned(r)?'✎ '+e(r.file_name)+(signedVersions(r.id).length?` · ${signedVersions(r.id).length+1} versions`:''):r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
 }
 function taskList(tasks) {
-  if (!tasks.length) return empty('Nothing outstanding','New next steps from your supervisor will appear here.');
-  return `<div class="tasks">${tasks.map(t => `<label class="task"><input type="checkbox" data-task="${e(t.id)}" ${t.completed?'checked':''}><span><strong class="${t.completed?'done':''}">${e(t.title)}</strong><small>${isSupervisor()?e(studentName(t.student_id))+' · ':''}${t.due_date?'Due '+e(dateText(t.due_date)):'No deadline set'}</small></span></label>`).join('')}</div>`;
+  if (!tasks.length) return empty('Nothing outstanding',isSupervisor()?'New next steps will appear here.':'Add your own next step, or your supervisor will assign one.');
+  // Students may edit the next steps they added themselves; steps from the supervisor can only be ticked off.
+  return `<div class="tasks">${tasks.map(t => `<div class="task-row"><label class="task"><input type="checkbox" data-task="${e(t.id)}" ${t.completed?'checked':''}><span><strong class="${t.completed?'done':''}">${e(t.title)}</strong><small>${isSupervisor()?e(studentName(t.student_id))+' · ':''}${t.due_date?'Due '+e(dateText(t.due_date)):'No deadline set'}${ownTask(t)?(isSupervisor()?' · Added by student':' · Added by you'):''}</small></span></label>${!isSupervisor()&&ownTask(t)&&t.student_id===user.id?`<button class="text-button" data-action="edit-task" data-id="${e(t.id)}" aria-label="Edit next step: ${e(t.title)}">Edit</button>`:''}</div>`).join('')}</div>`;
+}
+function notesPanel() {
+  const notes=[...(data.notes||[])].sort((a,b)=>b.updated_at.localeCompare(a.updated_at));
+  return `<section class="panel"><div class="panel-heading"><h2>My notes</h2><button class="text-button" data-action="new-note">+ New note</button></div>${notes.length?`<div class="notes">${notes.map(n=>`<button class="note-card" data-action="note" data-id="${e(n.id)}"><div class="row"><strong>${e(n.title||'Untitled note')}</strong>${badge(n.shared?'Shared with supervisor':'Private',n.shared?'green':'')}</div><span class="excerpt">${e(n.body.slice(0,140))}${n.body.length>140?'…':''}</span><small class="muted">Updated ${e(dateText(n.updated_at))}</small></button>`).join('')}</div>`:empty('No notes yet','Keep ideas, questions and plans here. Notes are private unless you share them with your supervisor.')}</section>`;
 }
 function students() {
   return `<section class="panel"><div class="toolbar"><input id="student-search" type="search" aria-label="Search students" placeholder="Search names or thesis titles…" value="${e(studentFilter)}"><label class="check"><input type="checkbox" id="show-archived" ${showArchived?'checked':''}> Include archived</label></div><div id="student-results">${studentResults()}</div></section>`;
@@ -149,7 +163,7 @@ function studentResults() {
   const list = data.profiles.filter(p=>p.role==='student'&&(showArchived||p.active)&&`${p.full_name} ${p.username} ${p.thesis_title}`.toLowerCase().includes(studentFilter.toLowerCase()));
   return `<div class="table-wrap"><table class="student-table"><caption class="sr-only">Student accounts</caption><thead><tr><th scope="col">Student</th><th scope="col">Thesis</th><th scope="col">Expected defence</th><th scope="col">Latest progress</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${list.map(p=>{const latest=sortedReports().find(r=>r.student_id===p.id); return `<tr><td><div class="person"><span class="avatar soft">${e(initials(p.full_name))}</span><div><strong>${e(p.full_name)}</strong><small>@${e(p.username)} ${!p.active?'· Archived':''}</small></div></div></td><td class="title-cell" data-label="Thesis">${e(p.thesis_title||'Title to be agreed')}</td><td data-label="Expected defence">${p.defence_date?e(defenceText(p.defence_date)):'—'}</td><td data-label="Latest progress">${latest?e(dateText(latest.created_at)):'No updates yet'}</td><td><button class="secondary small-button" data-action="student" data-id="${e(p.id)}" aria-label="Open ${e(p.full_name)}">Open →</button></td></tr>`;}).join('')}</tbody></table></div>${list.length?'':empty('No students found','Add a student or change your search.')}`;
 }
-function progress() { const reports=sortedReports(); return `<div class="progress-layout"><section class="panel"><div class="panel-heading"><h2>${isSupervisor()?'Student submissions':'Your submissions'}</h2><span class="muted small">${reports.length} updates</span></div>${reports.length?reports.map(reportCard).join(''):empty('Start with a short update','Share what you have done, what comes next, and where you need help.')}</section>${!isSupervisor()?`<section class="panel"><div class="panel-heading"><h2>Your next steps</h2></div>${taskList([...data.tasks].sort((a,b)=>Number(a.completed)-Number(b.completed)))}</section>`:''}</div>`; }
+function progress() { const reports=sortedReports(); return `<div class="progress-layout"><section class="panel"><div class="panel-heading"><h2>${isSupervisor()?'Student submissions':'Your submissions'}</h2><span class="muted small">${reports.length} updates</span></div>${reports.length?reports.map(reportCard).join(''):empty('Start with a short update','Share what you have done, what comes next, and where you need help.')}</section>${!isSupervisor()?`<div><section class="panel"><div class="panel-heading"><h2>Your next steps</h2><button class="text-button" data-action="new-task">+ Add next step</button></div>${taskList([...data.tasks].sort((a,b)=>Number(a.completed)-Number(b.completed)))}</section>${notesPanel()}</div>`:''}</div>`; }
 function meetingCard(s) {
   return `<button class="meeting-card" data-action="meeting" data-id="${e(s.id)}"><div class="date-tile"><strong>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,day:'numeric'})}</strong><span>${new Date(s.starts_at).toLocaleDateString('en-GB',{timeZone:TIMEZONE,month:'short'})}</span></div><div class="grow"><strong>${isSupervisor()?e(studentName(s.booked_by)):'Supervision meeting'}</strong><small>${e(time(s.starts_at))}–${e(time(s.ends_at))} · ${e(s.location)}</small>${s.meeting_notes?badge('Meeting notes added','green'):''}</div><span class="arrow">→</span></button>`;
 }
@@ -182,7 +196,7 @@ async function downloadWorkspaceBackup() {
   const warn = event => { event.preventDefault(); event.returnValue = ''; };
   window.addEventListener('beforeunload', warn);
   try {
-    const { ZipWriter, createWorkspaceArchive, verifyArchive } = await import('./thesis-backup.js');
+    const { ZipWriter, createWorkspaceArchive, verifyArchive } = await import('./thesis-backup.js?v=2026-10-18-signed-notes');
     const chunks = [], zip = new ZipWriter(bytes => chunks.push(bytes), 512 * 1024 * 1024);
     await createWorkspaceArchive({ mode: backupStore.mode, project: backupStore.project,
       snapshot: () => backupStore.backupSnapshot(), file: path => backupStore.backupFile(path) }, zip, text => { status.textContent = text; });
@@ -192,7 +206,7 @@ async function downloadWorkspaceBackup() {
     const url = URL.createObjectURL(blob), link = document.createElement('a');
     link.href = url; link.download = `thesis-workspace-${backupStore.mode==='demo'?'demo-':''}${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
-    status.textContent = `Verified and downloaded: ${result.counts.profiles} profiles, ${result.counts.reports} submissions, ${result.counts.comments} comments, ${result.counts.reviews} PDF reviews, ${result.counts.tasks} tasks, ${result.counts.slots} meeting slots and ${result.files} files. Extract the ZIP and open index.html. Keep it in a private backup location.`;
+    status.textContent = `Verified and downloaded: ${result.counts.profiles} profiles, ${result.counts.reports} submissions, ${result.counts.comments} comments, ${result.counts.reviews} PDF reviews, ${result.counts.tasks} tasks, ${result.counts.slots} meeting slots, ${result.counts.signed||0} signed document versions, ${result.counts.notes||0} shared notes and ${result.files} files. Extract the ZIP and open index.html. Keep it in a private backup location.`;
   } catch (error) {
     status.textContent = `Backup failed: ${error.message} No complete archive was downloaded.`;
   } finally {
@@ -218,12 +232,32 @@ function connectionDialog() {
   dialog('Connect your workspace',`<p class="muted">Enter the project URL and publishable key from Supabase. These are saved only in this browser.</p><form data-form="connection">${field('Project URL',`<input name="url" type="url" required placeholder="https://your-project.supabase.co" value="${e(config?.url||'')}">`)}${field('Publishable key',`<input name="key" required autocomplete="off" spellcheck="false" placeholder="sb_publishable_…" value="${e(config?.key||'')}">`)}<p class="small muted">Your supervisor must complete the Supabase setup before real accounts can sign in.</p>${actions('Save connection')}</form>${config?'<button class="text-button danger" data-action="clear-connection">Reset to website connection</button>':''}`);
 }
 function newReport() {
-  dialog('Share your progress',`<form data-form="report">${field('Update title','<input name="title" required maxlength="160" placeholder="What have you been working on?">')}${field('Submission type','<select name="kind"><option value="progress">Progress update</option><option value="thesis">Thesis draft</option></select>')}${field('What are you uploading?',`<select name="document_type">${Object.entries(uploadTypes).map(([value,label])=>`<option value="${value}">${e(label)}</option>`).join('')}</select><small>Choose Thesis draft above for your main thesis PDF and its version comparison.</small>`,'upload-category')}${field('Progress notes','<textarea name="body" required minlength="10" maxlength="10000" rows="5" placeholder="What you completed, your next steps, and anything you need help with…"></textarea>')}${field('Attach a PDF (optional)','<input name="pdf" type="file" accept="application/pdf,.pdf"><small>PDF only · up to 20 MB</small>')}${field('Or add a sharing link (optional)','<input name="share_url" type="url" placeholder="https://…"><small>Personal or university Drive. Make sure your supervisor has permission to open it.</small>')}${actions('Submit progress')}</form>`);
+  dialog('Share your progress',`<form data-form="report">${field('Update title','<input name="title" required maxlength="160" placeholder="What have you been working on?">')}${field('Submission type','<select name="kind"><option value="progress">Progress update</option><option value="thesis">Thesis draft</option><option value="signed">Signed document (.asice)</option></select>')}${field('What are you uploading?',`<select name="document_type">${Object.entries(uploadTypes).map(([value,label])=>`<option value="${value}">${e(label)}</option>`).join('')}</select><small>Choose Thesis draft above for your main thesis PDF and its version comparison.</small>`,'upload-category')}${field('Progress notes','<textarea name="body" required minlength="10" maxlength="10000" rows="5" placeholder="What you completed, your next steps, and anything you need help with…"></textarea>')}${field('Attach a PDF (optional)','<input name="pdf" type="file" accept="application/pdf,.pdf"><small>PDF only · up to 20 MB</small>','pdf-field')}${field('Signed document (.asice)','<input name="asice" type="file" accept=".asice,application/vnd.etsi.asic-e+zip" disabled><small>A DigiDoc4 container you signed, up to 20 MB. Your supervisor can download it, add a signature and upload the signed version back.</small>','asice-field')}${field('Or add a sharing link (optional)','<input name="share_url" type="url" placeholder="https://…"><small>Personal or university Drive. Make sure your supervisor has permission to open it.</small>','link-field')}${actions('Submit progress')}</form>`);
+  modal.querySelector('.asice-field').hidden = true;
+}
+function signedSection(r) {
+  const files=[{path:r.file_path,name:r.file_name,by:r.created_by||r.student_id,at:r.created_at,label:'Original'},
+    ...signedVersions(r.id).map((v,i)=>({path:v.file_path,name:v.file_name,by:v.uploaded_by,at:v.created_at,label:`Version ${i+2}`}))];
+  const started=r.created_by&&r.created_by!==r.student_id?(isSupervisor()?'You started this document for the student. ':'Your supervisor started this document for you. '):'';
+  return `<h3>Signed document</h3><p class="small muted">${started}Every signature is kept as its own version. Download the latest version, add your signature in DigiDoc4, then upload the result here. DigiDoc4 also shows who has signed.</p><div class="signed-files">${files.map((f,i)=>`<div class="signed-file${i===files.length-1?' latest':''}"><div><strong>${e(f.label)}${i===files.length-1?' · latest':''}</strong><small>${e(f.name)} · ${e(uploader(f.by,r))} · ${e(dateText(f.at))}</small></div><button class="secondary small-button" data-action="download-file" data-path="${e(f.path)}" data-name="${e(f.name)}">Download</button></div>`).join('')}</div>${isSupervisor()||r.student_id===user.id?`<form data-form="signed-version" data-id="${e(r.id)}">${field('Upload a signed version (.asice)','<input name="asice" type="file" required accept=".asice,application/vnd.etsi.asic-e+zip">')}<button class="secondary" type="submit">Upload signed version</button></form>`:''}`;
+}
+function noteDialog(id) {
+  const n=id?(data.notes||[]).find(n=>n.id===id&&n.student_id===user.id):null; if (id&&!n) return;
+  dialog(n?'Edit note':'New note',`<form data-form="note" data-id="${e(n?.id||'')}">${field('Title (optional)',`<input name="title" maxlength="200" value="${e(n?.title||'')}">`)}${field('Note',`<textarea name="body" required maxlength="10000" rows="8" placeholder="Ideas, questions, reading notes, plans…">${e(n?.body||'')}</textarea>`)}<label class="check"><input type="checkbox" name="shared" ${n?.shared?'checked':''}> Share this note with my supervisor</label><p class="small muted">Private notes are visible only to you. Shared notes are read-only for your supervisor; you can stop sharing at any time.</p>${actions(n?'Save note':'Create note')}</form>${n?`<button class="text-button danger" data-action="delete-note" data-id="${e(n.id)}">Delete note</button>`:''}`);
+}
+function taskDialog(id) {
+  const t=id?data.tasks.find(t=>t.id===id&&ownTask(t)&&t.student_id===user.id):null; if (id&&!t) return;
+  dialog(t?'Edit next step':'Add a next step',`<form data-form="my-task" data-id="${e(t?.id||'')}">${field('Next step',`<input name="title" required maxlength="500" value="${e(t?.title||'')}" placeholder="A concrete next action">`)}${field('Due date (optional)',`<input name="due_date" type="date" value="${e(t?.due_date||'')}">`)}<p class="small muted">Your supervisor sees your next steps. Steps your supervisor assigned can only be ticked off.</p>${actions(t?'Save next step':'Add next step')}</form>${t?`<button class="text-button danger" data-action="delete-task" data-id="${e(t.id)}">Delete next step</button>`:''}`);
+}
+function signedDocumentDialog(studentId) {
+  const p=data.profiles.find(p=>p.id===studentId&&p.role==='student'&&p.active); if (!p) return;
+  if (modal.open&&!closeDialog()) return;
+  dialog(`New signed document for ${p.full_name}`,`<form data-form="signed-document" data-id="${e(studentId)}">${field('Title','<input name="title" required maxlength="160" placeholder="e.g. Supervision agreement">')}${field('Note for the student','<textarea name="body" required minlength="10" maxlength="10000" rows="4" placeholder="What to check and sign, and by when…"></textarea>')}${field('Signed document (.asice)','<input name="asice" type="file" required accept=".asice,application/vnd.etsi.asic-e+zip"><small>Sign it in DigiDoc4 first. Up to 20 MB.</small>')}<p class="small muted">${store.mode==='demo'?'Demo only; no e-mail is sent.':p.contact_email?'The student gets an e-mail about it in a few minutes.':'The student has no e-mail address in Account, so they will see it in the workspace.'}</p>${actions('Share signed document')}</form>`);
 }
 function reportDialog(id) {
   const r=data.reports.find(r=>r.id===id); if (!r) return;
   const comments=data.comments.filter(c=>c.report_id===id).sort((a,b)=>a.created_at.localeCompare(b.created_at));
-  dialog(r.title,`<p class="muted">${e(studentName(r.student_id))} · ${e(dateText(r.created_at))}</p><div class="prose">${e(r.body)}</div><div class="document-actions">${isSupervisor()?`<button class="secondary" data-action="${r.dismissed_at?'restore-report':'dismiss-report'}" data-id="${e(r.id)}">${r.dismissed_at?'Restore to overview':'Dismiss from overview'}</button>`:''}${r.file_path?`<button class="secondary" data-action="file" data-id="${e(r.id)}">▧ Open ${e(r.file_name)}</button>`:''}${r.file_path&&(isSupervisor()||pdfFeedback(id))?`<button class="${isSupervisor()?'primary':'secondary'}" data-action="pdf-review" data-id="${e(id)}">${isSupervisor()?'Review PDF & add feedback':'View PDF feedback'}</button>`:''}${r.kind==='thesis'&&r.file_path&&isSupervisor()?`<button class="secondary" data-action="pdf-compare" data-id="${e(id)}">Compare thesis versions</button>`:''}${safeShareURL(r.share_url)?`<a class="secondary" href="${e(safeShareURL(r.share_url))}" target="_blank" rel="noopener noreferrer">↗ Open shared document</a>`:''}</div><h3>Supervisor feedback</h3>${pdfFeedback(id)?`<p class="notice green">PDF feedback shared on ${e(dateText(pdfFeedback(id).updated_at))}. Open ${isSupervisor()?'Review PDF & add feedback':'View PDF feedback'} to read the highlights and comments.</p>`:''}${comments.length?comments.map(c=>`<div class="comment"><div class="row"><strong>Supervisor</strong><small>${e(dateText(c.created_at))}</small></div><p class="prose">${e(c.body)}</p></div>`).join(''):'<p class="muted">No feedback yet.</p>'}${isSupervisor()?`<form data-form="comment" data-id="${e(id)}">${field('Leave a comment','<textarea name="body" rows="3" required maxlength="10000" placeholder="Feedback, decisions, and what to focus on next…"></textarea>')}<button class="primary" type="submit">Add feedback</button></form><hr><form data-form="task" data-id="${e(r.student_id)}">${field('Assign a next step','<input name="title" required maxlength="500" placeholder="A concrete next action">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="secondary" type="submit">Add next step</button></form>`:''}`,true);
+  dialog(r.title,`<p class="muted">${e(studentName(r.student_id))} · ${e(dateText(r.created_at))}</p><div class="prose">${e(r.body)}</div><div class="document-actions">${isSupervisor()?`<button class="secondary" data-action="${r.dismissed_at?'restore-report':'dismiss-report'}" data-id="${e(r.id)}">${r.dismissed_at?'Restore to overview':'Dismiss from overview'}</button>`:''}${isPdf(r)?`<button class="secondary" data-action="file" data-id="${e(r.id)}">▧ Open ${e(r.file_name)}</button>`:''}${isPdf(r)&&(isSupervisor()||pdfFeedback(id))?`<button class="${isSupervisor()?'primary':'secondary'}" data-action="pdf-review" data-id="${e(id)}">${isSupervisor()?'Review PDF & add feedback':'View PDF feedback'}</button>`:''}${r.kind==='thesis'&&r.file_path&&isSupervisor()?`<button class="secondary" data-action="pdf-compare" data-id="${e(id)}">Compare thesis versions</button>`:''}${safeShareURL(r.share_url)?`<a class="secondary" href="${e(safeShareURL(r.share_url))}" target="_blank" rel="noopener noreferrer">↗ Open shared document</a>`:''}</div>${isSigned(r)?signedSection(r):''}<h3>Supervisor feedback</h3>${pdfFeedback(id)?`<p class="notice green">PDF feedback shared on ${e(dateText(pdfFeedback(id).updated_at))}. Open ${isSupervisor()?'Review PDF & add feedback':'View PDF feedback'} to read the highlights and comments.</p>`:''}${comments.length?comments.map(c=>`<div class="comment"><div class="row"><strong>Supervisor</strong><small>${e(dateText(c.created_at))}</small></div><p class="prose">${e(c.body)}</p></div>`).join(''):'<p class="muted">No feedback yet.</p>'}${isSupervisor()?`<form data-form="comment" data-id="${e(id)}">${field('Leave a comment','<textarea name="body" rows="3" required maxlength="10000" placeholder="Feedback, decisions, and what to focus on next…"></textarea>')}<button class="primary" type="submit">Add feedback</button></form><hr><form data-form="task" data-id="${e(r.student_id)}">${field('Assign a next step','<input name="title" required maxlength="500" placeholder="A concrete next action">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="secondary" type="submit">Add next step</button></form>`:''}`,true);
 }
 async function pdfDialog(id, compare = false) {
   const r = data.reports.find(r => r.id === id);
@@ -233,7 +267,7 @@ async function pdfDialog(id, compare = false) {
   modal.classList.add('pdf-dialog');
   const root = modal.querySelector('#pdf-workspace');
   try {
-    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-10-gateway');
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-18-signed-notes');
     if (!root.isConnected || !modal.open) return;
     pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports }) : openReview(root, {
       store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),
@@ -310,7 +344,7 @@ function downloadImportResults() {
 }
 function studentDialog(id) {
   const p=data.profiles.find(p=>p.id===id); if (!p) return;
-  dialog(p.full_name,`<p class="muted">@${e(p.username)} · ${p.active?'Active':'Archived'}</p><h3>${e(p.thesis_title||'Title to be agreed')}</h3><p>${p.defence_date?'Expected defence: '+e(defenceText(p.defence_date)):''}</p><div class="document-actions"><button class="secondary" data-action="password" data-id="${e(id)}">Reset password</button><button class="secondary ${p.active?'danger':''}" data-action="archive" data-id="${e(id)}">${p.active?'Archive account':'Restore account'}</button></div><p class="small muted">Archiving removes sign-in access and releases future bookings. Reports and feedback are retained.</p><h3>Progress history</h3>${sortedReports().filter(r=>r.student_id===id).map(reportCard).join('')||'<p class="muted">No updates yet.</p>'}<h3>Next steps</h3>${taskList(data.tasks.filter(t=>t.student_id===id))}<form data-form="task" data-id="${e(id)}">${field('New next step','<input name="title" required maxlength="500">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="primary">Assign next step</button></form>`,true);
+  dialog(p.full_name,`<p class="muted">@${e(p.username)} · ${p.active?'Active':'Archived'}</p><h3>${e(p.thesis_title||'Title to be agreed')}</h3><p>${p.defence_date?'Expected defence: '+e(defenceText(p.defence_date)):''}</p><div class="document-actions"><button class="secondary" data-action="password" data-id="${e(id)}">Reset password</button><button class="secondary ${p.active?'danger':''}" data-action="archive" data-id="${e(id)}">${p.active?'Archive account':'Restore account'}</button>${p.active?`<button class="secondary" data-action="signed-document" data-id="${e(id)}">✎ New signed document</button>`:''}</div><p class="small muted">Archiving removes sign-in access and releases future bookings. Reports and feedback are retained.</p><h3>Progress history</h3>${sortedReports().filter(r=>r.student_id===id).map(reportCard).join('')||'<p class="muted">No updates yet.</p>'}<h3>Shared notes</h3>${(data.notes||[]).filter(n=>n.student_id===id&&n.shared).sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).map(n=>`<div class="comment"><div class="row"><strong>${e(n.title||'Note')}</strong><small>${e(dateText(n.updated_at))}</small></div><p class="prose">${e(n.body)}</p></div>`).join('')||'<p class="muted">No shared notes. Students\' private notes are not visible to you.</p>'}<h3>Next steps</h3>${taskList(data.tasks.filter(t=>t.student_id===id))}<form data-form="task" data-id="${e(id)}">${field('New next step','<input name="title" required maxlength="500">')}${field('Due date (optional)','<input name="due_date" type="date">')}<button class="primary">Assign next step</button></form>`,true);
 }
 function zonedTime(day, clock) {
   const [y,m,d]=day.split('-').map(Number), [h,min]=clock.split(':').map(Number); const target=Date.UTC(y,m-1,d,h,min); let guess=target;
@@ -331,7 +365,8 @@ document.addEventListener('click', async event => {
   const button=event.target.closest('[data-action]'); if (!button) return;
   const action=button.dataset.action, id=button.dataset.id;
   if (action==='close') { if (!studentImport?.running) closeDialog(); return; }
-  if (['login-blocks', 'unblock-login', 'download-backup', 'request-teams', 'automation-status', 'automation-retry', 'dismiss-report', 'restore-report', 'dismiss-all', 'import-students', 'create-import', 'download-import-results', 'add-student', 'student', 'password', 'archive'].includes(action) && !isSupervisor()) return;
+  if (['login-blocks', 'unblock-login', 'download-backup', 'request-teams', 'automation-status', 'automation-retry', 'dismiss-report', 'restore-report', 'dismiss-all', 'import-students', 'create-import', 'download-import-results', 'add-student', 'student', 'password', 'archive', 'signed-document'].includes(action) && !isSupervisor()) return;
+  if (['new-note', 'note', 'delete-note', 'new-task', 'edit-task', 'delete-task'].includes(action) && isSupervisor()) return;
   if (action==='import-students') return importDialog();
   if (action==='download-import-results') return downloadImportResults();
   if (['connection','clear-connection'].includes(action) && !canConfigure()) return;
@@ -351,6 +386,11 @@ document.addEventListener('click', async event => {
   if (action==='availability') return availabilityDialog();
   if (action==='book') return bookDialog(id);
   if (action==='meeting') return meetingDialog(id);
+  if (action==='new-note') return noteDialog();
+  if (action==='note') { if (modal.open && !closeDialog()) return; return noteDialog(id); }
+  if (action==='new-task') return taskDialog();
+  if (action==='edit-task') { if (modal.open && !closeDialog()) return; return taskDialog(id); }
+  if (action==='signed-document') return signedDocumentDialog(id);
   if (action==='password') { closeDialog(); return dialog('Reset student password',`<form data-form="password" data-id="${e(id)}">${field('New password','<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password">')}${actions('Reset password')}</form>`); }
   await busy(button, async()=>{
     if (action==='download-backup') { await downloadWorkspaceBackup(); return; }
@@ -372,6 +412,12 @@ document.addEventListener('click', async event => {
     if (action==='delete-slot') { if (!confirm('Remove this available meeting slot?')) return; await store.deleteSlot(id); await refresh(); toast('Slot removed.'); }
     if (action==='cancel') { if (!confirm('Cancel this booking and make the slot available again?')) return; await store.cancel(id); closeDialog(); await refresh(); toast('Booking cancelled.'); }
     if (action==='file') { const win=window.open('about:blank','_blank'); if (win) win.opener=null; try { const url=await store.fileURL(data.reports.find(r=>r.id===id)); if (win) win.location.replace(url); else toast('Allow pop-ups to open the PDF.',true); if(url.startsWith('blob:'))setTimeout(()=>URL.revokeObjectURL(url),300000); } catch(err) { win?.close(); throw err; } }
+    if (action==='download-file') {
+      const blob=await store.fileBlob(button.dataset.path), url=URL.createObjectURL(blob), link=document.createElement('a');
+      link.href=url; link.download=button.dataset.name||'signed-document.asice'; link.click(); setTimeout(()=>URL.revokeObjectURL(url),60000);
+    }
+    if (action==='delete-note') { if (!confirm('Delete this note? This cannot be undone.')) return; await store.deleteNote(id); closeDialog(); await refresh(); toast('Note deleted.'); }
+    if (action==='delete-task') { if (!confirm('Delete this next step?')) return; await store.deleteMyTask(id); closeDialog(); await refresh(); toast('Next step deleted.'); }
     if (action==='switch-demo') { await store.logout(); store.dispose(); location.assign(location.pathname+'?demo=1'); return; }
     if (action==='clear-connection') { await store?.logout(); store?.dispose(); clearConnection(); localStorage.setItem('thesis.mode.v1','live'); store=new SupabaseStore(getConnection()); user=null; closeDialog(); render(); }
     if (action==='reset-demo') { if (!confirm('Delete this browser’s demo records and files and restore the samples?')) return; await store.logout(); localStorage.removeItem('thesis.demo.v1'); await new Promise((resolve,reject)=>{const r=indexedDB.deleteDatabase('thesis-demo-files');r.onsuccess=resolve;r.onerror=()=>reject(r.error);}); user=null; await store.init(); render(); toast('Demo reset.'); }
@@ -396,7 +442,17 @@ document.addEventListener('submit', event => {
       try { if (username) await store.unblockLogin({target_username:username}); toast('Password reset. Any sign-in block for this student was cleared.'); }
       catch { toast('Password reset. Check Settings → Sign-in protection if the student is still blocked.', true); }
     }
-    if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,document_type:values.kind==='thesis'?'thesis':values.document_type||'other',body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
+    if (type==='report' && values.kind==='signed') { const file=values.asice?.size?values.asice:null; await validateAsice(file); await store.submitReport({title:values.title.trim(),kind:'progress',document_type:'signed',body:values.body.trim(),share_url:null},file); toast('Your signed document has been shared.'); }
+    else if (type==='report') { const file=values.pdf?.size?values.pdf:null; await validatePDF(file); const link=httpsURL(values.share_url); await store.submitReport({title:values.title.trim(),kind:values.kind,document_type:values.kind==='thesis'?'thesis':values.document_type||'other',body:values.body.trim(),share_url:link},file); toast('Your progress has been shared.'); }
+    if (type==='signed-version') {
+      const r=data.reports.find(r=>r.id===form.dataset.id); if (!r) return;
+      await store.addSignedVersion(r, values.asice?.size?values.asice:null);
+      closeDialog(); await refresh(); reportDialog(r.id);
+      toast(isSupervisor()?`Signed version uploaded. ${feedbackNotice(r.id)}`:`Signed version uploaded. ${store.mode==='demo'?'Demo only; no e-mail is sent.':'Your supervisor gets an e-mail about it.'}`); return;
+    }
+    if (type==='signed-document') { await store.createSignedDocument(form.dataset.id,values.title.trim(),values.body.trim(),values.asice?.size?values.asice:null); toast('Signed document shared with the student.'); }
+    if (type==='note') { await store.saveNote(form.dataset.id||null,values.title||'',values.body,values.shared==='on'); toast(values.shared==='on'?'Note saved and shared with your supervisor.':'Note saved. Only you can see it.'); }
+    if (type==='my-task') { if (form.dataset.id) await store.updateMyTask(form.dataset.id,values.title.trim(),values.due_date); else await store.task(user.id,values.title.trim(),values.due_date); toast(form.dataset.id?'Next step updated.':'Next step added.'); }
     if (type==='comment') { await store.comment(form.dataset.id,values.body.trim()); const id=form.dataset.id; closeDialog(); await refresh(); reportDialog(id); toast(`Feedback added. ${feedbackNotice(id)}`); return; }
     if (type==='task') { await store.task(form.dataset.id,values.title.trim(),values.due_date); toast('Next step added.'); }
     if (type==='book') { if (values.contact_email.trim().toLowerCase()!==user.contact_email) await store.updateMyContact(values.contact_email); await store.book(form.dataset.id,values.agenda.trim()); toast('Meeting booked.'); }
@@ -413,9 +469,16 @@ document.addEventListener('submit', event => {
 });
 document.addEventListener('change', event=>{
   if (event.target.name==='kind' && event.target.closest('[data-form="report"]')) {
-    const category = event.target.form.querySelector('.upload-category');
-    category.hidden = event.target.value==='thesis'; category.querySelector('select').disabled = category.hidden;
+    const form = event.target.form, kind = event.target.value;
+    const category = form.querySelector('.upload-category');
+    category.hidden = kind!=='progress'; category.querySelector('select').disabled = category.hidden;
+    // A signed document is an .asice upload instead of a PDF or sharing link.
+    for (const [selector, show] of [['.pdf-field', kind!=='signed'], ['.link-field', kind!=='signed'], ['.asice-field', kind==='signed']]) {
+      const wrapper = form.querySelector(selector); wrapper.hidden = !show; wrapper.querySelector('input').disabled = !show;
+    }
+    form.querySelector('.asice-field input').required = kind==='signed';
   }
+  if (event.target.name==='asice' && event.target.files[0]) validateAsice(event.target.files[0]).catch(err=>{event.target.value='';toast(err.message,true);});
 
   if (event.target.name==='student-import-file') {
     const input = event.target, file = input.files[0];

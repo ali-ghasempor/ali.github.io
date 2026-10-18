@@ -168,6 +168,19 @@ input[type=checkbox] { width: 21px; height: 21px; flex-shrink: 0; accent-color: 
 .task input { margin: 3px 0; }
 .task strong { font-size: 16px; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
 .task small { display: block; font-size: 14px; color: var(--muted); margin-top: 5px; }
+/* Each next step sits in a row so students can edit the ones they added; the row carries the divider. */
+.task-row { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.task-row:last-child { border-bottom: 0; }
+.task-row .task { flex: 1; min-width: 0; border-bottom: 0; }
+.notes { display: grid; gap: 10px; padding: 6px 24px 24px; }
+.note-card { display: grid; gap: 6px; width: 100%; text-align: left; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--ink); font: inherit; cursor: pointer; }
+.note-card:hover, .note-card:focus-visible { border-color: #0f766e; }
+.note-card strong { overflow-wrap: anywhere; min-width: 0; }
+.signed-files { display: grid; gap: 8px; margin: 12px 0 18px; }
+.signed-file { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.signed-file.latest { border-color: #0f766e; background: var(--soft); }
+.signed-file > div { min-width: 0; }
+.signed-file small { display: block; color: var(--muted); overflow-wrap: anywhere; margin-top: 2px; }
 .done { text-decoration: line-through; color: var(--muted); }
 .thesis-card { background: var(--soft); border: 1px solid #beddd7; border-radius: var(--radius); padding: 26px; display: flex; align-items: center; gap: 24px; justify-content: space-between; margin-bottom: 24px; }
 .thesis-card > div { min-width: 0; }
