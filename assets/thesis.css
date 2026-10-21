@@ -424,3 +424,4 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 26px 0; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
 }
+.decline-form { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }

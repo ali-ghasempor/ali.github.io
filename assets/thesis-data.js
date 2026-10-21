@@ -1,5 +1,5 @@
-import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js?v=2026-10-18-signed-notes';
-import { BackendSession } from './thesis-backend.js?v=2026-10-18-signed-notes';
+import { PUBLIC_SUPABASE_CONFIG } from './thesis-config.js?v=2026-10-21-signing-changes';
+import { BackendSession } from './thesis-backend.js?v=2026-10-21-signing-changes';
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -279,6 +279,11 @@ export class SupabaseStore {
   async deleteNote(note_id) { const { error } = await this.client.rpc('thesis_delete_note', { note_id }); fail(error); }
   async updateMyTask(task_id, title, due_date) { const { error } = await this.client.rpc('thesis_update_my_task', { task_id, new_title: title, new_due_date: due_date || null }); fail(error); }
   async deleteMyTask(task_id) { const { error } = await this.client.rpc('thesis_delete_my_task', { task_id }); fail(error); }
+  async requestSignatureChanges(target_report, reason) {
+    const { error } = await this.client.rpc('thesis_request_signature_changes', { target_report, reason: reason.trim() });
+    if (error?.code === 'PGRST202' || error?.message === 'API operation not allowed') throw new Error('Declining signatures needs the update. Run supabase/signed-changes-request-update.sql and redeploy thesis-api.');
+    fail(error);
+  }
   async fileURL(report) {
     const { data, error } = await this.client.storage.from('thesis-files').createSignedUrl(report.file_path, 300); fail(error); return data.signedUrl;
   }
@@ -289,7 +294,7 @@ export class SupabaseStore {
   }
   async backupSnapshot() {
     if (this.user?.role !== 'supervisor' || !this.user.active) throw new Error('An active supervisor account is required.');
-    const { WORKSPACE_TABLES, OPTIONAL_TABLES, sharedNotesOnly, tableName } = await import('./thesis-backup.js?v=2026-10-18-signed-notes');
+    const { WORKSPACE_TABLES, OPTIONAL_TABLES, sharedNotesOnly, tableName } = await import('./thesis-backup.js?v=2026-10-21-signing-changes');
     const workspace = {};
     for (const name of WORKSPACE_TABLES) {
       const rows = []; let total = null;
@@ -533,6 +538,13 @@ export class DemoStore {
   ownTask(d, id) { const task = d.tasks.find(t => t.id === id && t.student_id === this.user.id && t.created_by === this.user.id); if (!task) throw new Error('You can only change next steps you added yourself.'); return task; }
   async updateMyTask(id, title, due_date) { const d = this.read(); if (!title.trim()) throw new Error('Use a next step of 1–500 characters.'); Object.assign(this.ownTask(d, id), { title: title.trim(), due_date: due_date || null }); this.write(d); }
   async deleteMyTask(id) { const d = this.read(); this.ownTask(d, id); d.tasks = d.tasks.filter(t => t.id !== id); this.write(d); }
+  async requestSignatureChanges(id, reason) {
+    this.requireSupervisor(); const d = this.read(), r = d.reports.find(r => r.id === id && r.document_type === 'signed');
+    if (!r) throw new Error('Signed document not found.');
+    if (!reason.trim()) throw new Error('Explain what needs to change.');
+    d.comments.push({ id: uuid(), report_id: id, author_id: this.user.id, body: `Changes requested before signing:\n${reason.trim()}`, created_at: now() });
+    Object.assign(r, { signing_rejected_at: now(), signing_rejected_by: this.user.id }); this.write(d);
+  }
   async fileURL(report) { const file = await demoFile('get', report.file_path); if (!file) throw new Error('This demo file is not in this browser.'); return URL.createObjectURL(file); }
   async pdfReview(report_id) {
     const d = await this.load();

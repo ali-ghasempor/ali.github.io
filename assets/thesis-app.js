@@ -1,4 +1,4 @@
-import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, validateAsice, httpsURL } from './thesis-data.js?v=2026-10-18-signed-notes';
+import { DemoStore, SupabaseStore, escapeHTML as e, getConnection, setConnection, clearConnection, validatePDF, validateAsice, httpsURL } from './thesis-data.js?v=2026-10-21-signing-changes';
 
 const app = document.querySelector('#app');
 const modal = document.querySelector('#modal');
@@ -40,7 +40,10 @@ const uploader = (id, report) => id === report.student_id ? (id === user.id ? 'Y
 const ownTask = t => t.created_by === t.student_id;
 // A signed document waits for the supervisor while the student signed last, and counts as answered once the supervisor did.
 const latestSigner = r => signedVersions(r.id).at(-1)?.uploaded_by || r.created_by || r.student_id;
-const hasFeedback = r => r.document_type === 'signed' ? latestSigner(r) !== r.student_id : data.comments.some(c => c.report_id === r.id) || Boolean(pdfFeedback(r.id));
+// The supervisor declined the student's latest version and asked for changes; a newer student upload re-opens it.
+const changesRequested = r => r.document_type === 'signed' && Boolean(r.signing_rejected_at) && latestSigner(r) === r.student_id &&
+  Date.parse(r.signing_rejected_at) >= Date.parse(signedVersions(r.id).at(-1)?.created_at || r.created_at);
+const hasFeedback = r => r.document_type === 'signed' ? latestSigner(r) !== r.student_id || changesRequested(r) : data.comments.some(c => c.report_id === r.id) || Boolean(pdfFeedback(r.id));
 const icons = {
   overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   students: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m20 0v-2a4 4 0 0 0-3-3.87M15 3.13a4 4 0 0 1 0 7.75"/><circle cx="9" cy="7" r="4"/>',
@@ -145,7 +148,7 @@ function overview() {
     <div><section class="panel"><div class="panel-heading"><h2>Next meetings</h2><button class="text-button" data-action="view" data-view="meetings">Calendar →</button></div>${upcoming.length?upcoming.slice(0,3).map(meetingCard).join(''):empty('Time to connect','Choose a meeting slot from the calendar.')}</section><section class="panel"><div class="panel-heading"><h2>Next steps</h2>${!supervisor?'<button class="text-button" data-action="new-task">+ Add</button>':''}</div>${taskList(openTasks().slice(0,4))}</section></div></div>`;
 }
 function reportCard(r) {
-  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(isSupervisor()&&r.dismissed_at?'Dismissed from overview':isSigned(r)?(hasFeedback(r)?'Signed by supervisor':'Awaiting supervisor signature'):hasFeedback(r)?'Feedback added':'Awaiting feedback',r.dismissed_at&&isSupervisor()?'':hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${e(docLabel(r))}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${isSigned(r)?'✎ '+e(r.file_name)+(signedVersions(r.id).length?` · ${signedVersions(r.id).length+1} versions`:''):r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
+  return `<button class="report-card" data-action="report" data-id="${e(r.id)}"><span class="avatar soft">${e(initials(studentName(r.student_id)))}</span><div class="grow"><div class="row"><strong>${e(r.title)}</strong>${badge(isSupervisor()&&r.dismissed_at?'Dismissed from overview':isSigned(r)?(changesRequested(r)?'Changes requested':hasFeedback(r)?'Signed by supervisor':'Awaiting supervisor signature'):hasFeedback(r)?'Feedback added':'Awaiting feedback',(r.dismissed_at||changesRequested(r))&&isSupervisor()?'':changesRequested(r)?'amber':hasFeedback(r)?'green':'amber')}</div><p>${isSupervisor()?e(studentName(r.student_id))+' · ':''}${e(dateText(r.created_at))} · ${e(docLabel(r))}</p><span class="excerpt">${e(r.body.slice(0,130))}${r.body.length>130?'…':''}</span><div class="file-hint">${isSigned(r)?'✎ '+e(r.file_name)+(signedVersions(r.id).length?` · ${signedVersions(r.id).length+1} versions`:''):r.file_path?'▧ '+e(r.file_name):r.share_url?'↗ Shared document':'Notes only'}</div></div><span class="arrow">→</span></button>`;
 }
 function taskList(tasks) {
   if (!tasks.length) return empty('Nothing outstanding',isSupervisor()?'New next steps will appear here.':'Add your own next step, or your supervisor will assign one.');
@@ -196,7 +199,7 @@ async function downloadWorkspaceBackup() {
   const warn = event => { event.preventDefault(); event.returnValue = ''; };
   window.addEventListener('beforeunload', warn);
   try {
-    const { ZipWriter, createWorkspaceArchive, verifyArchive } = await import('./thesis-backup.js?v=2026-10-18-signed-notes');
+    const { ZipWriter, createWorkspaceArchive, verifyArchive } = await import('./thesis-backup.js?v=2026-10-21-signing-changes');
     const chunks = [], zip = new ZipWriter(bytes => chunks.push(bytes), 512 * 1024 * 1024);
     await createWorkspaceArchive({ mode: backupStore.mode, project: backupStore.project,
       snapshot: () => backupStore.backupSnapshot(), file: path => backupStore.backupFile(path) }, zip, text => { status.textContent = text; });
@@ -239,7 +242,9 @@ function signedSection(r) {
   const files=[{path:r.file_path,name:r.file_name,by:r.created_by||r.student_id,at:r.created_at,label:'Original'},
     ...signedVersions(r.id).map((v,i)=>({path:v.file_path,name:v.file_name,by:v.uploaded_by,at:v.created_at,label:`Version ${i+2}`}))];
   const started=r.created_by&&r.created_by!==r.student_id?(isSupervisor()?'You started this document for the student. ':'Your supervisor started this document for you. '):'';
-  return `<h3>Signed document</h3><p class="small muted">${started}Every signature is kept as its own version. Download the latest version, add your signature in DigiDoc4, then upload the result here. DigiDoc4 also shows who has signed.</p><div class="signed-files">${files.map((f,i)=>`<div class="signed-file${i===files.length-1?' latest':''}"><div><strong>${e(f.label)}${i===files.length-1?' · latest':''}</strong><small>${e(f.name)} · ${e(uploader(f.by,r))} · ${e(dateText(f.at))}</small></div><button class="secondary small-button" data-action="download-file" data-path="${e(f.path)}" data-name="${e(f.name)}">Download</button></div>`).join('')}</div>${isSupervisor()||r.student_id===user.id?`<form data-form="signed-version" data-id="${e(r.id)}">${field('Upload a signed version (.asice)','<input name="asice" type="file" required accept=".asice,application/vnd.etsi.asic-e+zip">')}<button class="secondary" type="submit">Upload signed version</button></form>`:''}`;
+  const declined=changesRequested(r), awaiting=!declined&&latestSigner(r)===r.student_id;
+  const notice=declined?`<p class="notice amber">${isSupervisor()?`You requested changes on ${e(dateText(r.signing_rejected_at))}. This document is out of your Awaiting feedback until the student uploads a new signed version.`:`Your supervisor requested changes on ${e(dateText(r.signing_rejected_at))} before signing. Read the feedback below, fix the document, sign it again in DigiDoc4 and upload the new version here.`}</p>`:'';
+  return `<h3>Signed document</h3>${notice}<p class="small muted">${started}Every signature is kept as its own version. Download the latest version, add your signature in DigiDoc4, then upload the result here. DigiDoc4 also shows who has signed.</p><div class="signed-files">${files.map((f,i)=>`<div class="signed-file${i===files.length-1?' latest':''}"><div><strong>${e(f.label)}${i===files.length-1?' · latest':''}</strong><small>${e(f.name)} · ${e(uploader(f.by,r))} · ${e(dateText(f.at))}</small></div><button class="secondary small-button" data-action="download-file" data-path="${e(f.path)}" data-name="${e(f.name)}">Download</button></div>`).join('')}</div>${isSupervisor()||r.student_id===user.id?`<form data-form="signed-version" data-id="${e(r.id)}">${field('Upload a signed version (.asice)','<input name="asice" type="file" required accept=".asice,application/vnd.etsi.asic-e+zip">')}<button class="secondary" type="submit">Upload signed version</button></form>`:''}${isSupervisor()&&awaiting?`<form data-form="decline-signing" data-id="${e(r.id)}" class="decline-form">${field('Not ready to sign? Request changes','<textarea name="reason" required maxlength="9000" rows="3" placeholder="What the student should fix before you sign…"></textarea><small>The student gets this as feedback and an e-mail. The document leaves your Awaiting feedback until they upload a new signed version.</small>')}<button class="secondary danger" type="submit">Decline signing &amp; request changes</button></form>`:''}`;
 }
 function noteDialog(id) {
   const n=id?(data.notes||[]).find(n=>n.id===id&&n.student_id===user.id):null; if (id&&!n) return;
@@ -267,7 +272,7 @@ async function pdfDialog(id, compare = false) {
   modal.classList.add('pdf-dialog');
   const root = modal.querySelector('#pdf-workspace');
   try {
-    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-18-signed-notes');
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-10-21-signing-changes');
     if (!root.isConnected || !modal.open) return;
     pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports }) : openReview(root, {
       store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),
@@ -449,6 +454,11 @@ document.addEventListener('submit', event => {
       await store.addSignedVersion(r, values.asice?.size?values.asice:null);
       closeDialog(); await refresh(); reportDialog(r.id);
       toast(isSupervisor()?`Signed version uploaded. ${feedbackNotice(r.id)}`:`Signed version uploaded. ${store.mode==='demo'?'Demo only; no e-mail is sent.':'Your supervisor gets an e-mail about it.'}`); return;
+    }
+    if (type==='decline-signing') {
+      if (!isSupervisor()) return; const id=form.dataset.id;
+      await store.requestSignatureChanges(id, values.reason);
+      closeDialog(); await refresh(); reportDialog(id); toast(`Changes requested. ${feedbackNotice(id)}`); return;
     }
     if (type==='signed-document') { await store.createSignedDocument(form.dataset.id,values.title.trim(),values.body.trim(),values.asice?.size?values.asice:null); toast('Signed document shared with the student.'); }
     if (type==='note') { await store.saveNote(form.dataset.id||null,values.title||'',values.body,values.shared==='on'); toast(values.shared==='on'?'Note saved and shared with your supervisor.':'Note saved. Only you can see it.'); }
