@@ -279,7 +279,7 @@ async function pdfDialog(id, compare = false) {
   modal.classList.add('pdf-dialog');
   const root = modal.querySelector('#pdf-workspace');
   try {
-    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-11-09-large-compare');
+    const { openComparison, openReview } = await import('./thesis-pdf.js?v=2026-11-09-minor-changes');
     if (!root.isConnected || !modal.open) return;
     pdfSession = compare ? openComparison(root, { store, report: r, reports: data.reports, onError: err => reportError('exception', err.message) }) : openReview(root, {
       store, report: r, readonly: !isSupervisor(), onError: err => toast(err.message, true),

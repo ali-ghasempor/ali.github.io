@@ -264,6 +264,16 @@ dialog.pdf-dialog { width: 1200px; }
 .pdf-feedback > .primary { margin-top: 18px; }
 .pdf-feedback .field { margin: 16px 0; }
 .diff-summary { padding: 16px; background: var(--soft); border-radius: 8px; }
+.diff-summary p { margin: 0; }
+.diff-minor-toggle { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); cursor: pointer; }
+.diff-minor-toggle input { width: 20px; height: 20px; flex-shrink: 0; }
+.diff-ai { border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 16px 0; }
+.diff-ai h3 { margin: 0 0 6px; }
+.diff-ai ol { margin: 12px 0; padding-left: 22px; display: grid; gap: 12px; }
+.diff-ai li > p { margin: 6px 0 0; }
+.diff-ai-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.diff-ai summary { cursor: pointer; color: var(--primary); font-weight: 650; }
+.diff-ai-prompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; background: #f5f8fa; padding: 12px; border-radius: 8px; max-height: 320px; overflow: auto; }
 .diff-passage { border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin: 16px 0; overflow-wrap: anywhere; }
 .diff-passage h3 { margin: 0 0 12px; }
 .diff-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }

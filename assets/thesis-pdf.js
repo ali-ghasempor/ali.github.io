@@ -199,11 +199,18 @@ export async function alignWords(a, b, exact, signal) {
   }
   return parts;
 }
+// A change is minor when only numbers, punctuation, capitals or spacing differ: page numbers in the table of
+// contents, renumbered figures and citations, comma fixes. Decimals and percentages always count as real changes.
+export function minorChange(removed, added) {
+  if ([...removed, ...added].some(w => /%|^\D*\d+[.,]\d+\D*$/.test(w))) return false;
+  const letters = list => list.join('').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}]/gu, '');
+  return letters(removed) === letters(added);
+}
 async function changes(before, after, signal) {
   const { diff } = await libs();
   const parts = await alignWords(before.map(w => w.text), after.map(w => w.text),
     (x, y, limit) => diff.diffArrays(x, y, { maxEditLength: limit }), signal);
-  const groups = []; let old = 0, current = 0, added = 0, removed = 0;
+  const groups = []; let old = 0, current = 0;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if (!part.added && !part.removed) { old += part.count; current += part.count; continue; }
@@ -211,14 +218,15 @@ async function changes(before, after, signal) {
     const group = { before: before.slice(Math.max(0, old - 12), old).map(t => t.text).join(' '), removed: [], added: [], oldAt: old, newAt: current };
     while (i < parts.length && (parts[i].added || parts[i].removed)) {
       const next = parts[i];
-      if (next.removed) { group.removed.push(...before.slice(old, old + next.count)); old += next.count; removed += next.count; }
-      else { group.added.push(...after.slice(current, current + next.count)); current += next.count; added += next.count; }
+      if (next.removed) { group.removed.push(...before.slice(old, old + next.count)); old += next.count; }
+      else { group.added.push(...after.slice(current, current + next.count)); current += next.count; }
       i++;
     }
     group.after = after.slice(current, current + 12).map(t => t.text).join(' ');
+    group.minor = minorChange(group.removed.map(t => t.text), group.added.map(t => t.text));
     groups.push(group); i--;
   }
-  return { groups, added, removed };
+  return { groups };
 }
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const pageRange = tokens => tokens.length ? ' · page ' + tokens[0].page + (tokens.at(-1).page !== tokens[0].page ? '–' + tokens.at(-1).page : '') : '';
@@ -233,11 +241,34 @@ function bands(boxes) {
   }
   return out;
 }
+const uploaded = r => new Date(r.created_at).toLocaleString('en-GB', { timeZone: 'Europe/Tallinn' });
+const fileBase = r => (r.file_name || 'thesis').replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]+/g, '_');
+function save(data, name, type) {
+  const url = URL.createObjectURL(new Blob([data], { type })), link = document.createElement('a');
+  link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+// Ready-made request for ChatGPT: the supervisor attaches both drafts and the change list, then pastes this.
+function aiPrompt([previous, latest, list], selected, report) {
+  return `I supervise this student's thesis. They have submitted a new draft, and I want an overview of what changed since the previous draft before I check the details myself.
+
+I have attached three files:
+- ${previous}: the previous draft (uploaded ${uploaded(selected)})
+- ${latest}: the current draft (uploaded ${uploaded(report)})
+- ${list}: the text differences found by a word-by-word comparison of the two PDFs, with the page of each change in both drafts. Minor changes (page numbers, figure, table and citation numbering, punctuation, capitals) are already left out.
+
+Please:
+1. Summarise in 3–5 sentences how the thesis has changed overall.
+2. Go through the thesis chapter by chapter and describe what was added, rewritten, moved or removed. Skip layout, formatting and small wording fixes.
+3. List the changes that need my attention, for example: changed research questions, method, data, results or conclusions; removed content; new claims without a source; figures or tables that no longer match the text; contradictions between chapters.
+4. Say what still looks unfinished in the current draft, such as empty sections, placeholder text or missing references.
+
+For every point, give the section number and the page in the current draft so I can check it. Use the change list as the record of what changed and the PDFs for context. If you are unsure about something, say so instead of guessing.`;
+}
 export function openComparison(root, { store, report, reports, onError }) {
-  const abort = new AbortController(); let docs = [], run = 0, result = null, current = 0;
+  const abort = new AbortController(); let docs = [], run = 0, result = null, current = 0, list = [], shown = 0, showMinor = false, baseline = null;
   const choices = thesisBaselines(report, reports);
   root.innerHTML = `<p>Compare this thesis draft with an earlier thesis draft from the same student. Both PDFs are shown side by side: removed text is marked red in the previous draft, added text green in the current one.</p>
-    <label class="field"><span>Earlier thesis draft</span><select id="pdf-baseline">${choices.map(r => `<option value="${e(r.id)}">${e(r.title)} · ${e(new Date(r.created_at).toLocaleString('en-GB', { timeZone: 'Europe/Tallinn' }))} · ${e(r.file_name)}</option>`).join('')}</select></label>
+    <label class="field"><span>Earlier thesis draft</span><select id="pdf-baseline">${choices.map(r => `<option value="${e(r.id)}">${e(r.title)} · ${e(uploaded(r))} · ${e(r.file_name)}</option>`).join('')}</select></label>
     <p class="small muted">Text comparison ignores line wrapping and repeated headers. Figures, formatting, and scanned pages need a visual check in the original PDFs.</p>
     <div id="pdf-comparison" role="status" aria-live="polite"></div>`;
   const output = root.querySelector('#pdf-comparison'), select = root.querySelector('select');
@@ -253,7 +284,7 @@ export function openComparison(root, { store, report, reports, onError }) {
     const ctx = pane.overlay.getContext('2d'), W = pane.overlay.width, H = pane.overlay.height, old = pane.side === 'old';
     ctx.clearRect(0, 0, W, H); if (!result) return;
     const line = Math.max(2, W / 400);
-    result.groups.forEach((group, index) => {
+    list.forEach((group, index) => {
       const place = located(group, pane.side), active = index === current;
       for (const r of bands((place.tokens || []).filter(t => t.page === pane.page).flatMap(t => t.boxes))) {
         ctx.fillStyle = old ? (active ? '#dc262666' : '#dc262633') : (active ? '#16a34a66' : '#16a34a33');
@@ -270,7 +301,7 @@ export function openComparison(root, { store, report, reports, onError }) {
     });
   }
   function firstBox(pane) {
-    const place = result && located(result.groups[current], pane.side);
+    const place = list[current] && located(list[current], pane.side);
     if (!place) return null;
     if (place.tokens) return place.tokens.find(t => t.page === pane.page && t.boxes.length)?.boxes[0] || null;
     return place.anchor?.page === pane.page ? place.anchor.boxes[0] || null : null;
@@ -300,29 +331,72 @@ export function openComparison(root, { store, report, reports, onError }) {
     } catch (error) { if (error.name !== 'RenderingCancelledException' && thisRun === run) pane.label.textContent = error.message; }
   }
   function show(index) {
-    if (!result?.groups.length) return;
-    current = Math.max(0, Math.min(result.groups.length - 1, index));
-    root.querySelector('#diff-position').textContent = `Change ${current + 1} of ${result.groups.length}`;
+    if (!list.length) return;
+    current = Math.max(0, Math.min(list.length - 1, index));
+    root.querySelector('#diff-position').textContent = `Change ${current + 1} of ${list.length}`;
     root.querySelector('[data-diff=previous]').disabled = current === 0;
-    root.querySelector('[data-diff=next]').disabled = current === result.groups.length - 1;
+    root.querySelector('[data-diff=next]').disabled = current === list.length - 1;
     root.querySelectorAll('.diff-passage').forEach(p => p.classList.toggle('active', Number(p.dataset.change) === current));
     for (const pane of panes) {
-      const place = located(result.groups[current], pane.side);
+      const place = located(list[current], pane.side);
       pane.page = place.tokens?.[0]?.page || place.anchor?.page || pane.page;
       void renderPane(pane, true);
     }
   }
+  function more() {
+    const html = list.slice(shown, shown + 40).map((g, index) => `<section class="diff-passage" data-change="${shown + index}"><h3><button class="text-button" type="button" data-change-button="${shown + index}">Change ${shown + index + 1} · show in both PDFs</button></h3><p class="small muted">${e(g.before)}${g.before ? ' …' : ''}</p><div class="diff-columns">
+      <div class="diff-old"><strong>Previous${pageRange(g.removed)}</strong><p>${g.removed.length ? `<del>${e(g.removed.map(w => w.text).join(' '))}</del>` : 'No removed text'}</p></div>
+      <div class="diff-new"><strong>Current${pageRange(g.added)}</strong><p>${g.added.length ? `<ins>${e(g.added.map(w => w.text).join(' '))}</ins>` : 'No added text'}</p></div></div><p class="small muted">${g.after ? '… ' : ''}${e(g.after)}</p></section>`).join('');
+    output.querySelector('.diff-results').insertAdjacentHTML('beforeend', html); shown += 40;
+    output.querySelector('#pdf-more-changes').hidden = shown >= list.length;
+    root.querySelectorAll('.diff-passage').forEach(p => p.classList.toggle('active', Number(p.dataset.change) === current));
+  }
+  // Counts, navigation and the change list, rebuilt when minor changes are shown or hidden.
+  function listChanges() {
+    list = showMinor ? result.groups : result.groups.filter(g => !g.minor); current = 0; shown = 0;
+    const minor = result.groups.length - result.groups.filter(g => !g.minor).length, count = list.length, words = side => list.reduce((n, g) => n + g[side].length, 0);
+    output.querySelector('#diff-counts').innerHTML = `<strong>${plural(count, 'changed passage')}</strong> · <span class="diff-count-added">${plural(words('added'), 'word')} added</span> · <span class="diff-count-removed">${plural(words('removed'), 'word')} removed</span>${minor && !showMinor ? ` · ${plural(minor, 'minor change')} hidden` : ''}`;
+    output.querySelector('#diff-navigation').innerHTML = count ? '<div class="diff-nav"><button class="secondary" type="button" data-diff="previous">← Previous change</button><strong id="diff-position"></strong><button class="secondary" type="button" data-diff="next">Next change →</button></div>'
+      : `<p>${minor ? 'Only minor changes found: page numbers, numbering, punctuation or capitals.' : 'No text differences found.'} Figures and formatting may still differ; compare the pages below.</p>`;
+    output.querySelector('#diff-list').innerHTML = count ? '<h3>All changes</h3><div class="diff-results"></div><button class="secondary" id="pdf-more-changes" type="button" hidden>Show more changes</button>' : '';
+    if (count) { more(); show(0); } else for (const p of panes) void renderPane(p);
+  }
+  const aiFiles = () => [`previous-draft-${fileBase(baseline)}.pdf`, `current-draft-${fileBase(report)}.pdf`, `changes-${fileBase(report)}.txt`];
+  // The changes for ChatGPT as plain text, without the minor ones, with the page of each change in both drafts.
+  function changeList() {
+    const real = result.groups.filter(g => !g.minor), text = tokens => tokens.map(t => t.text).join(' ');
+    const page = (g, side) => { const place = located(g, side); return place.tokens?.[0]?.page || place.anchor?.page || '?'; };
+    return [`Text changes between two drafts of a thesis`,
+      `Previous draft: ${baseline.file_name} (uploaded ${uploaded(baseline)})\nCurrent draft: ${report.file_name} (uploaded ${uploaded(report)})`,
+      `${plural(real.length, 'change')}. ${plural(result.groups.length - real.length, 'minor change')} (page numbers, numbering, punctuation, capitals) left out.`,
+      ...real.map((g, i) => [`Change ${i + 1} · previous draft page ${page(g, 'old')} · current draft page ${page(g, 'new')}`,
+        `Before: ${g.before ? '…' + g.before : '(start of the thesis)'}`, `Removed: ${text(g.removed) || '(nothing)'}`,
+        `Added: ${text(g.added) || '(nothing)'}`, `After: ${g.after ? g.after + '…' : '(end of the thesis)'}`].join('\n'))].join('\n\n') + '\n';
+  }
+  async function forAI(action) {
+    if (!result || docs.length < 2) return;
+    const files = aiFiles(), status = output.querySelector('#diff-ai-status');
+    if (action === 'previous') save(docs[0].bytes, files[0], 'application/pdf');
+    if (action === 'current') save(docs[1].bytes, files[1], 'application/pdf');
+    if (action === 'changes') save(changeList(), files[2], 'text/plain;charset=utf-8');
+    if (action !== 'prompt') return;
+    try { await navigator.clipboard.writeText(aiPrompt(files, baseline, report)); status.textContent = 'Prompt copied. Paste it into ChatGPT with the three files attached.'; }
+    catch { status.textContent = 'This browser blocked copying. Copy the prompt below by hand.'; output.querySelector('.diff-ai details').open = true; }
+  }
   root.addEventListener('click', event => {
-    const nav = event.target.closest('[data-diff]'), step = event.target.closest('[data-step]'), change = event.target.closest('[data-change-button]');
+    const nav = event.target.closest('[data-diff]'), step = event.target.closest('[data-step]'), change = event.target.closest('[data-change-button]'), ai = event.target.closest('[data-ai]');
     if (nav) show(current + (nav.dataset.diff === 'next' ? 1 : -1));
     if (step) { const pane = panes[Number(step.dataset.pane)]; pane.page += Number(step.dataset.step); void renderPane(pane); }
     if (change) { show(Number(change.dataset.changeButton)); root.querySelector('.diff-nav')?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+    if (event.target.closest('#pdf-more-changes')) more();
+    if (ai) void forAI(ai.dataset.ai);
   });
+  root.addEventListener('change', event => { if (event.target.id === 'diff-show-minor' && result) { showMinor = event.target.checked; listChanges(); } });
   const resize = new ResizeObserver(() => { for (const pane of panes) void renderPane(pane); });
   async function release() { const old = docs; docs = []; panes = []; resize.disconnect(); for (const d of old) await d.dispose(); }
   async function compare() {
     const selected = choices.find(r => r.id === select.value), thisRun = ++run;
-    await release(); result = null; current = 0;
+    await release(); result = null; list = []; current = 0; showMinor = false; baseline = selected;
     if (thisRun !== run) return;
     if (!selected) { output.textContent = 'This is the first uploaded thesis draft. It will be the starting version for the next draft.'; return; }
     select.disabled = true;
@@ -339,30 +413,27 @@ export function openComparison(root, { store, report, reports, onError }) {
       result = await changes(previous.tokens, latest.tokens, abort.signal);
       if (abort.signal.aborted || thisRun !== run) return;
       const scanned = previous.textPages < docs[0].pdf.numPages || latest.textPages < docs[1].pdf.numPages;
-      const count = result.groups.length;
+      const minor = result.groups.filter(g => g.minor).length;
       const pane = (side, index, title, file) => `<section class="diff-pane diff-pane-${side}" aria-label="${title} draft">
         <div class="diff-pane-head"><span class="diff-pane-title"><strong>${title}</strong> <span class="small muted">${e(file)}</span></span>
         <span class="diff-pane-pages"><button class="secondary" type="button" data-pane="${index}" data-step="-1" aria-label="Previous page of the ${title.toLowerCase()} draft">←</button><span class="diff-page-label small"></span><button class="secondary" type="button" data-pane="${index}" data-step="1" aria-label="Next page of the ${title.toLowerCase()} draft">→</button></span></div>
         <div class="diff-scroll"><div class="pdf-sheet"><canvas aria-label="${title} draft page"></canvas><canvas class="pdf-overlay diff-overlay" aria-hidden="true"></canvas></div></div></section>`;
-      output.innerHTML = `${scanned ? '<p class="notice amber">Some pages have no extractable text and are not covered by this text comparison. Check those pages in the originals.</p>' : ''}<p class="diff-summary"><strong>${plural(count, 'changed passage')}</strong> · <span class="diff-count-added">${plural(result.added, 'word')} added</span> · <span class="diff-count-removed">${plural(result.removed, 'word')} removed</span></p>
-        ${count ? '<div class="diff-nav"><button class="secondary" type="button" data-diff="previous">← Previous change</button><strong id="diff-position"></strong><button class="secondary" type="button" data-diff="next">Next change →</button></div>' : '<p>No text differences found. Figures and formatting may still differ; compare the pages below.</p>'}
+      const button = (action, label) => `<button class="secondary small-button" type="button" data-ai="${action}">${label}</button>`;
+      output.innerHTML = `${scanned ? '<p class="notice amber">Some pages have no extractable text and are not covered by this text comparison. Check those pages in the originals.</p>' : ''}<div class="diff-summary"><p id="diff-counts"></p>${minor ? `<label class="diff-minor-toggle small"><input type="checkbox" id="diff-show-minor"> Show ${plural(minor, 'minor change')} (page numbers, numbering, punctuation, capitals)</label>` : ''}</div>
+        <section class="diff-ai" aria-labelledby="diff-ai-title"><h3 id="diff-ai-title">Review with ChatGPT</h3>
+        <p class="small muted">Ask ChatGPT for an overview of what changed, then check the details in the comparison below. Use your TalTech ChatGPT account: these files contain the student’s unpublished thesis.</p>
+        <ol><li><a class="secondary small-button" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT ↗</a></li>
+        <li>Download the three files and attach them in ChatGPT:<div class="diff-ai-buttons">${button('previous', 'Previous draft PDF')}${button('current', 'Current draft PDF')}${button('changes', 'Change list (.txt)')}</div></li>
+        <li><div class="diff-ai-buttons"><button class="primary small-button" type="button" data-ai="prompt">Copy prompt</button><span>and paste it into ChatGPT.</span></div><p id="diff-ai-status" class="small" role="status"></p></li></ol>
+        <details><summary class="small">Show the prompt</summary><pre class="diff-ai-prompt">${e(aiPrompt(aiFiles(), selected, report))}</pre></details></section>
+        <div id="diff-navigation"></div>
         <div class="diff-panes">${pane('old', 0, 'Previous', selected.file_name)}${pane('new', 1, 'Current', report.file_name)}</div>
         <p class="diff-legend small"><span class="diff-key removed"></span>Removed from the previous draft <span class="diff-key added"></span>Added in the current draft · The selected change is outlined; a bar marks where text exists in only one draft.</p>
-        ${count ? `<h3>All changes</h3><div class="diff-results"></div>${count > 40 ? '<button class="secondary" id="pdf-more-changes" type="button">Show more changes</button>' : ''}` : ''}`;
+        <div id="diff-list"></div>`;
       panes = [...output.querySelectorAll('.diff-pane')].map((el, index) => ({ el, index, side: index ? 'new' : 'old', page: 1, seq: 0, task: null,
         canvas: el.querySelector('canvas'), overlay: el.querySelector('.diff-overlay'), sheet: el.querySelector('.pdf-sheet'), scroll: el.querySelector('.diff-scroll'), label: el.querySelector('.diff-page-label') }));
       for (const p of panes) resize.observe(p.scroll);
-      let shown = 0;
-      function more() {
-        const html = result.groups.slice(shown, shown + 40).map((g, index) => `<section class="diff-passage" data-change="${shown + index}"><h3><button class="text-button" type="button" data-change-button="${shown + index}">Change ${shown + index + 1} · show in both PDFs</button></h3><p class="small muted">${e(g.before)}${g.before ? ' …' : ''}</p><div class="diff-columns">
-          <div class="diff-old"><strong>Previous${pageRange(g.removed)}</strong><p>${g.removed.length ? `<del>${e(g.removed.map(w => w.text).join(' '))}</del>` : 'No removed text'}</p></div>
-          <div class="diff-new"><strong>Current${pageRange(g.added)}</strong><p>${g.added.length ? `<ins>${e(g.added.map(w => w.text).join(' '))}</ins>` : 'No added text'}</p></div></div><p class="small muted">${g.after ? '… ' : ''}${e(g.after)}</p></section>`).join('');
-        output.querySelector('.diff-results').insertAdjacentHTML('beforeend', html); shown += 40;
-        const button = output.querySelector('#pdf-more-changes'); if (button) button.hidden = shown >= result.groups.length;
-        root.querySelectorAll('.diff-passage').forEach(p => p.classList.toggle('active', Number(p.dataset.change) === current));
-      }
-      if (count) { output.querySelector('#pdf-more-changes')?.addEventListener('click', more); more(); show(0); }
-      else for (const p of panes) void renderPane(p);
+      listChanges();
     } catch (error) { if (!abort.signal.aborted && thisRun === run) { output.textContent = error.message; onError?.(error); await release(); } }
     finally { if (!abort.signal.aborted && thisRun === run) select.disabled = false; }
   }
