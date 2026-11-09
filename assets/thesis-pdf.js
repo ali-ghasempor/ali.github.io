@@ -130,12 +130,79 @@ async function words(document, signal, status) {
   }
   return { tokens, textPages };
 }
-async function changes(before, after) {
+// Longest chain of anchors that keeps the same order in both drafts (patience sorting).
+function ordered(anchors) {
+  const tails = [], previous = [];
+  anchors.forEach((anchor, index) => {
+    let low = 0, high = tails.length;
+    while (low < high) { const mid = (low + high) >> 1; if (anchors[tails[mid]][1] < anchor[1]) low = mid + 1; else high = mid; }
+    previous[index] = low ? tails[low - 1] : -1; tails[low] = index;
+  });
+  const chain = [];
+  for (let i = tails.at(-1) ?? -1; i >= 0; i = previous[i]) chain.push(anchors[i]);
+  return chain.reverse();
+}
+// Word diff that scales to whole theses with major rewrites: equal openings and endings are trimmed, words
+// that occur once in both stretches anchor the alignment, and only the short stretches between anchors get
+// the exact (slow) diff. Moved text shows as removed in one place and added in another.
+export async function alignWords(a, b, exact, signal) {
+  const parts = [], todo = [[0, a.length, 0, b.length]];
+  const emit = (key, count) => {
+    if (!count) return;
+    const last = parts.at(-1);
+    if (last && Boolean(last.added) === (key === 'added') && Boolean(last.removed) === (key === 'removed')) last.count += count;
+    else parts.push({ count, added: key === 'added', removed: key === 'removed' });
+  };
+  // A stretch with no reliable alignment counts as fully rewritten; its removal is listed before the addition.
+  const replace = (from, to, newFrom, newTo) => { emit('removed', to - from); emit('added', newTo - newFrom); };
+  let pause = performance.now();
+  while (todo.length) {
+    if (performance.now() - pause > 40) {
+      await new Promise(resolve => setTimeout(resolve, 0)); pause = performance.now();
+      if (signal?.aborted) throw new DOMException('Closed', 'AbortError');
+    }
+    const task = todo.pop();
+    if (task.length === 1) { emit('same', task[0]); continue; }
+    let [from, to, newFrom, newTo] = task;
+    while (from < to && newFrom < newTo && a[from] === b[newFrom]) { from++; newFrom++; }
+    emit('same', from - task[0]);
+    let end = 0;
+    while (to - end > from && newTo - end > newFrom && a[to - end - 1] === b[newTo - end - 1]) end++;
+    to -= end; newTo -= end;
+    if (end) todo.push([end]);
+    if (from === to || newFrom === newTo) { replace(from, to, newFrom, newTo); continue; }
+    const size = to - from + newTo - newFrom;
+    if (size <= 2000) {
+      const found = exact(a.slice(from, to), b.slice(newFrom, newTo), size);
+      if (found) for (const part of found) emit(part.added ? 'added' : part.removed ? 'removed' : 'same', part.count);
+      else replace(from, to, newFrom, newTo);
+      continue;
+    }
+    const seen = new Map();
+    for (let i = from; i < to; i++) { const s = seen.get(a[i]); if (s) s.old++; else seen.set(a[i], { old: 1, at: i, current: 0 }); }
+    for (let j = newFrom; j < newTo; j++) { const s = seen.get(b[j]); if (s) { s.current++; s.newAt = j; } }
+    const anchors = [];
+    for (const s of seen.values()) if (s.old === 1 && s.current === 1) anchors.push([s.at, s.newAt]);
+    anchors.sort((x, y) => x[0] - y[0]);
+    const chain = ordered(anchors);
+    if (!chain.length) {
+      const found = exact(a.slice(from, to), b.slice(newFrom, newTo), Math.min(size, 3000));
+      if (found) for (const part of found) emit(part.added ? 'added' : part.removed ? 'removed' : 'same', part.count);
+      else replace(from, to, newFrom, newTo);
+      continue;
+    }
+    // Stretches between anchors, queued so they are processed in reading order.
+    const pieces = []; let i = from, j = newFrom;
+    for (const [x, y] of chain) { pieces.push([i, x, j, y], [1]); i = x + 1; j = y + 1; }
+    pieces.push([i, to, j, newTo]);
+    for (let k = pieces.length - 1; k >= 0; k--) todo.push(pieces[k]);
+  }
+  return parts;
+}
+async function changes(before, after, signal) {
   const { diff } = await libs();
-  const parts = await new Promise(resolve => diff.diffArrays(before.map(w => w.text), after.map(w => w.text), {
-    timeout: 8000, maxEditLength: 20000, callback: resolve
-  }));
-  if (!parts) throw new Error('These drafts differ too much for a quick browser comparison. Try a nearer version.');
+  const parts = await alignWords(before.map(w => w.text), after.map(w => w.text),
+    (x, y, limit) => diff.diffArrays(x, y, { maxEditLength: limit }), signal);
   const groups = []; let old = 0, current = 0, added = 0, removed = 0;
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
@@ -166,7 +233,7 @@ function bands(boxes) {
   }
   return out;
 }
-export function openComparison(root, { store, report, reports }) {
+export function openComparison(root, { store, report, reports, onError }) {
   const abort = new AbortController(); let docs = [], run = 0, result = null, current = 0;
   const choices = thesisBaselines(report, reports);
   root.innerHTML = `<p>Compare this thesis draft with an earlier thesis draft from the same student. Both PDFs are shown side by side: removed text is marked red in the previous draft, added text green in the current one.</p>
@@ -269,7 +336,7 @@ export function openComparison(root, { store, report, reports }) {
       docs[0].tokens = previous.tokens; docs[1].tokens = latest.tokens;
       if (!previous.tokens.length || !latest.tokens.length) throw new Error('At least one PDF has no extractable text. Scanned PDFs need OCR; no text comparison is available.');
       status('Finding additions and deletions…');
-      result = await changes(previous.tokens, latest.tokens);
+      result = await changes(previous.tokens, latest.tokens, abort.signal);
       if (abort.signal.aborted || thisRun !== run) return;
       const scanned = previous.textPages < docs[0].pdf.numPages || latest.textPages < docs[1].pdf.numPages;
       const count = result.groups.length;
@@ -296,7 +363,7 @@ export function openComparison(root, { store, report, reports }) {
       }
       if (count) { output.querySelector('#pdf-more-changes')?.addEventListener('click', more); more(); show(0); }
       else for (const p of panes) void renderPane(p);
-    } catch (error) { if (!abort.signal.aborted && thisRun === run) { output.textContent = error.message; await release(); } }
+    } catch (error) { if (!abort.signal.aborted && thisRun === run) { output.textContent = error.message; onError?.(error); await release(); } }
     finally { if (!abort.signal.aborted && thisRun === run) select.disabled = false; }
   }
   select.addEventListener('change', compare); void compare();
